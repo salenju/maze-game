@@ -113,6 +113,7 @@ node scripts/generate_icons.py     # 重新生成 PWA 图标（需 Pillow）
 node scripts/verify.mjs            # 真浏览器验收：笔事件 / PWA / 离线 / 双引擎 / 完整通关
 node scripts/verify-slider.mjs     # 家长自定义滑块专项验证
 node scripts/measure-gameplay.mjs  # 玩法质量测量（防作弊、引导页副作用）
+node scripts/measure-feel.mjs      # 拖动手感测量（慢/快/长划笔 + 防盗闸门）
 node scripts/verify-live.mjs       # 对线上 GitHub Pages 做等价验收
 ```
 
