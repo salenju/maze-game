@@ -78,6 +78,21 @@ Apple Pencil 和 S Pen 在浏览器里就是标准 **Pointer Events**（`pointer
 
 代价是球不会完全贴住笔尖，而是沿合法路径追赶——这正是「被墙约束」的手感来源。
 
+### 防作弊：笔尖必须持续移动
+
+只让小球「跟着笔尖走」还不够。如果每次 `dragTo` 都规划出**到目标格的完整路径**，
+那么孩子把笔尖按在出口格上不动，小球就会自动走完整张迷宫——玩法完全失效。
+（这个缺陷真实存在过，并已在真实浏览器中实测复现：`scripts/measure-gameplay.mjs`）
+
+因此加了一道闸门：**只有笔尖真正进入新格子，才重新规划路径并补充前进额度**，
+每补充一次最多前进 `MOVE_BURST_CELLS = 5` 格。
+
+安全性有硬下界保证：任意迷宫起终点的曼哈顿距离至少为 `(cols-1)+(rows-1)`，
+最小配置 6×6 也有 10 格，远大于 5；24×24 更是 46 格。所以按住不动**不可能**通关。
+
+手感上不受影响：正常拖动时笔尖每 150-300ms 就会换格，额度会被持续补充；
+5 格约 0.77 秒的滑行量足以覆盖孩子连续划一笔的推进，不会走走停停。
+
 ---
 
 ## 本地开发
@@ -94,24 +109,37 @@ npm run typecheck
 ### 验证脚本
 
 ```bash
-node scripts/generate_icons.py   # 重新生成 PWA 图标（需 Pillow）
-node scripts/verify.mjs          # 真浏览器验收：笔事件 / PWA / 离线 / 双引擎
-node scripts/verify-slider.mjs   # 家长自定义滑块专项验证
+node scripts/generate_icons.py     # 重新生成 PWA 图标（需 Pillow）
+node scripts/verify.mjs            # 真浏览器验收：笔事件 / PWA / 离线 / 双引擎 / 完整通关
+node scripts/verify-slider.mjs     # 家长自定义滑块专项验证
+node scripts/measure-gameplay.mjs  # 玩法质量测量（防作弊、引导页副作用）
+node scripts/verify-live.mjs       # 对线上 GitHub Pages 做等价验收
 ```
 
-`verify.mjs` 覆盖 35 项检查，包括：
+`verify.mjs` 覆盖 48 项检查，包括：
 
 - 通过 CDP 发送**真正的 `pointerType: 'pen'` 事件**（Playwright 的 mouse API 只能产生鼠标事件，测不到笔的代码路径）；
 - 用 **WebKit 引擎**（Safari 同源）验证 iOS 侧行为；
 - 画布按 `devicePixelRatio` 缩放、拖动后页面不滚动不缩放；
 - Service Worker 注册、断网后仍可打开；
+- 沿真实解路径用笔走完迷宫，贯通「结算 → 存档 → 下一关 → 安装引导 → 首页战绩」；
 - 暂停/继续后**画笔仍然有效**（曾出现过此处丢输入挂载的严重缺陷）。
 
 ### 部署
 
-推送到 `main` 即自动构建发布。**首次需要在仓库网页上做一次设置**：
+推送到 `main` 即自动构建发布（构建 → 类型检查 → 单元测试 → 上传 → 部署）。
+
+Pages 的 `Source` 已设为 **GitHub Actions**。若之后重建仓库，需要手动设置一次：
 
 > `Settings` → `Pages` → `Build and deployment` → `Source` 选择 **GitHub Actions**
+
+也可用 API 一次性开启：
+
+```bash
+curl -X POST -H "Authorization: Bearer <token>" \
+  https://api.github.com/repos/salenju/maze-game/pages \
+  -d '{"build_type":"workflow"}'
+```
 
 ---
 

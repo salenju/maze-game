@@ -69,6 +69,13 @@ class App {
   private readonly seenPointerTypes: string[] = [];
   /** 提示栏自动复位用的定时器句柄，0 表示没有待执行的复位 */
   private hintTimer = 0;
+  /**
+   * 说明页是从「开始游戏」进入的（true）还是从首页「怎么玩」进入的（false）。
+   * 两者的「我知道啦」行为必须不同：
+   *   - 从开始游戏进入 → 确认后开局
+   *   - 从「怎么玩」进入 → 只是查阅说明，确认后回首页，且不得消耗首次引导
+   */
+  private howtoStartsGame = false;
 
   constructor() {
     this.canvas = must<HTMLCanvasElement>('#maze-canvas');
@@ -90,6 +97,7 @@ class App {
       this.audio.play('click');
       // 首次游玩先给操作引导，避免孩子握着笔不知道怎么开始
       if (!this.prefs.tutorialSeen) {
+        this.howtoStartsGame = true;
         this.screens.show('howto');
       } else {
         this.startGame(this.difficulty, Game.newSeed());
@@ -102,7 +110,11 @@ class App {
       this.showDifficulty();
     });
 
-    must('#btn-howto').addEventListener('click', () => this.screens.show('howto'));
+    // 首页的「怎么玩」只是查阅说明：不置 howtoStartsGame，确认后应回首页
+    must('#btn-howto').addEventListener('click', () => {
+      this.howtoStartsGame = false;
+      this.screens.show('howto');
+    });
 
     must('#btn-settings').addEventListener('click', () => {
       this.audio.unlock();
@@ -113,6 +125,13 @@ class App {
     must('#btn-settings-ok').addEventListener('click', () => this.screens.show('home'));
 
     must('#btn-howto-ok').addEventListener('click', () => {
+      if (!this.howtoStartsGame) {
+        // 只是查阅说明：回首页，且不消耗首次引导（否则孩子真正第一次玩时就没有引导了）
+        this.screens.show('home');
+        return;
+      }
+      // 首次游玩引导：确认后标记已读并开局
+      this.howtoStartsGame = false;
       this.prefs = { ...this.prefs, tutorialSeen: true };
       savePrefs(this.prefs);
       this.startGame(this.difficulty, Game.newSeed());

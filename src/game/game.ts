@@ -27,6 +27,20 @@ import { type Difficulty } from '../core/difficulty';
 const SPEED_CELLS_PER_SEC = 6.5;
 /** 视为「已在格中心」的阈值 */
 const ARRIVE_EPSILON = 0.02;
+/**
+ * 每次「笔尖进入新格子」后，小球最多沿规划路径前进的格数。
+ *
+ * 这是防作弊的核心闸门，也是整个移动模型的正确性基础：
+ * 路径只在小球真正移动笔尖时重算，且每次重算只放行有限格数，
+ * 因此「把笔尖按在出口上不动」最多前进这么多格就必然停住 —— 无法自动通关。
+ *
+ * 安全性有硬下界保证：任意迷宫中起终点的曼哈顿距离至少为 (cols-1)+(rows-1)，
+ * 最小配置 6×6 也有 10 格，远大于本值；最大配置 24×24 更是 46 格。
+ *
+ * 手感上的权衡：取 5 格（约 0.77 秒滑行）足以覆盖孩子连续划一笔的推进量，
+ * 不会出现走走停停；同时远小于任何迷宫的完整解答长度。
+ */
+const MOVE_BURST_CELLS = 5;
 
 export type Phase = 'playing' | 'paused' | 'won';
 
@@ -76,6 +90,10 @@ export class Game {
   private lastProgressAt = 0;
   private hintVisible = false;
   private bumpCooldown = 0;
+  /** 笔尖当前所在格，用于识别「是否移动到了新格子」 */
+  private pointerCell: Cell | null = null;
+  /** 本轮剩余可前进格数；笔尖每次进入新格子都会重置 */
+  private moveBudget = 0;
   private readonly footprints: Footprint[] = [];
   private readonly visitedStamp = new Map<number, number>();
 
@@ -155,8 +173,10 @@ export class Game {
 
   /**
    * 指针拖动：设定目标格。
-   * 只在按下期间调用（由 UI 层保证）。松手即停止跟随，
-   * 否则「点一下远处就自动走过去」会把迷宫变成自动寻路，玩法就没了。
+   *
+   * 防作弊的关键：**只有笔尖真的移动到新格子，才重新规划路径并补充前进额度**。
+   * 笔尖停在原地不换格时这里直接返回，小球用完当前额度就停住 ——
+   * 因此「把笔尖按在出口上不动」不可能自动通关（已实测过此缺陷）。
    */
   dragTo(cellX: number, cellY: number): void {
     if (this.phase !== 'playing') return;
@@ -164,7 +184,13 @@ export class Game {
     const tx = clamp(Math.floor(cellX), 0, this.maze.cols - 1);
     const ty = clamp(Math.floor(cellY), 0, this.maze.rows - 1);
 
-    if (this.targetCell && this.targetCell.x === tx && this.targetCell.y === ty) return;
+    const sameCell =
+      this.pointerCell !== null && this.pointerCell.x === tx && this.pointerCell.y === ty;
+    if (sameCell) return; // 笔尖没换格 → 不重算、不补充额度
+
+    this.pointerCell = { x: tx, y: ty };
+    // 笔尖进入新格子：补充前进额度，并重算到该格的路径
+    this.moveBudget = MOVE_BURST_CELLS;
 
     const from = this.playerCell;
     this.targetCell = { x: tx, y: ty };
@@ -174,8 +200,7 @@ export class Game {
       return;
     }
 
-    // 若指针方向上紧邻的那面是墙，给一次撞墙反馈。
-    // 注意：路径仍会绕过去，所以这是纯粹的感官提示，不是惩罚。
+    // 若指针方向上紧邻的那面是墙，给一次撞墙反馈（纯感官提示，不惩罚）
     this.maybeBump(from, tx, ty);
 
     this.path = solve(this.maze, from, this.targetCell);
@@ -184,6 +209,8 @@ export class Game {
   /** 松手：停止跟随，但保留一格缓冲让小人优雅停下，而不是骤然急停。 */
   releasePointer(): void {
     this.targetCell = null;
+    this.pointerCell = null;
+    this.moveBudget = 1;
     if (this.path.length > 1) this.path = this.path.slice(0, 2);
   }
 
@@ -224,6 +251,10 @@ export class Game {
   private advance(dt: number): void {
     if (this.path.length === 0) return;
 
+    // 前进额度耗尽 → 停住等待孩子继续移动笔尖。
+    // 这是防止「按住远处不动就自动通关」的闸门（额度由 dragTo 在换格时补充）。
+    if (this.moveBudget <= 0) return;
+
     let budget = SPEED_CELLS_PER_SEC * dt;
 
     while (budget > 0) {
@@ -249,6 +280,7 @@ export class Game {
         this.py = next.y;
         this.path.shift();
         this.markVisited(this.px, this.py);
+        this.moveBudget--;
         continue;
       }
 
@@ -258,6 +290,9 @@ export class Game {
         this.path.shift();
         this.markVisited(this.px, this.py);
         budget -= dist;
+        // 每完整走完一格消耗一点额度；额度用尽即停下等待笔尖继续移动
+        this.moveBudget--;
+        if (this.moveBudget <= 0) return;
       } else {
         this.px += (dx / dist) * budget;
         this.py += (dy / dist) * budget;

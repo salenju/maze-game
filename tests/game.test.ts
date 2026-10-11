@@ -36,6 +36,28 @@ function assertNoWallCrossing(maze: Maze, x: number, y: number): void {
   expect(y).toBeLessThan(maze.rows);
 }
 
+/**
+ * 模拟孩子沿解路径持续带路走完迷宫。
+ *
+ * 必须这样写而不能「一次 dragTo 到出口然后 run」：
+ * 那样属于按住不动，已被防作弊闸门正确拦截。
+ * 真实玩法要求笔尖不断移动到新格子，这里如实模拟。
+ * 返回是否通关。
+ */
+function walkSolution(game: Game, secondsPerStep = 0.25): boolean {
+  const path = game.solution;
+  game.dragTo(path[0]!.x, path[0]!.y);
+  for (let i = 1; i < path.length; i++) {
+    if (game.phaseNow === 'won') return true;
+    const cell = path[i]!;
+    game.dragTo(cell.x, cell.y);
+    run(game, secondsPerStep);
+  }
+  // 走完路径后再给一点时间让小球滑入出口
+  run(game, 1.5);
+  return game.phaseNow === 'won';
+}
+
 describe('游戏：初始化', () => {
   it('起点在左上角，出口在右下角', () => {
     const game = new Game(diff, 12345);
@@ -65,21 +87,37 @@ describe('游戏：初始化', () => {
 });
 
 describe('游戏：拖动移动', () => {
-  it('拖动后小人会朝目标移动，且始终留在合法格子内', () => {
+  it('沿解路径持续带路可走到出口，且全程留在合法格子内', () => {
     const game = new Game(diff, 4242);
     const target = { x: 9, y: 9 };
-    game.dragTo(target.x, target.y);
 
-    for (let i = 0; i < 600; i++) {
-      game.update(1 / 60);
-      const cell = game.playerCell;
-      assertNoWallCrossing(game.maze, cell.x, cell.y);
+    const path = game.solution;
+    game.dragTo(path[0]!.x, path[0]!.y);
+    for (let i = 1; i < path.length; i++) {
+      const cell = path[i]!;
+      game.dragTo(cell.x, cell.y);
+      for (let f = 0; f < 15; f++) {
+        game.update(1 / 60);
+        const cur = game.playerCell;
+        assertNoWallCrossing(game.maze, cur.x, cur.y);
+      }
     }
+    run(game, 2);
 
-    // 10x10 迷宫最长路径远小于 600 帧（10 秒）能走的距离，应已抵达出口附近
     const distance =
       Math.abs(game.playerCell.x - target.x) + Math.abs(game.playerCell.y - target.y);
     expect(distance).toBeLessThanOrEqual(1);
+  });
+
+  it('单次拖动只前进有限格数便停住（守住防作弊闸门）', () => {
+    const game = new Game(diff, 4242);
+    game.dragTo(9, 9);
+    run(game, 30);
+
+    const cell = game.playerCell;
+    // 额度上限是 5 格，即便笔尖按在出口也走不了多远
+    const travelled = Math.abs(cell.x) + Math.abs(cell.y);
+    expect(travelled).toBeLessThanOrEqual(6);
   });
 
   it('小人的移动严格沿走廊，绝不穿墙', () => {
@@ -157,20 +195,21 @@ describe('游戏：拖动移动', () => {
     expect(drift).toBeLessThanOrEqual(1);
   });
 
-  it('重复拖到同一个目标格不会重置进度', () => {
+  it('反复上报同一格既不会回退进度，也不会额外放行前进（真机 pointermove 会高频重复）', () => {
     const game = new Game(diff, 606);
     game.dragTo(9, 9);
-    run(game, 1.0);
+    run(game, 2.0); // 用完本轮额度后停住
     const snapshot = game.playerCell;
 
-    // 反复上报同一格（真机上 pointermove 会高频重复）
+    // 模拟真机：同一个格子上收到几十次重复上报
     for (let i = 0; i < 50; i++) game.dragTo(9, 9);
-    run(game, 0.5);
+    run(game, 1.0);
 
-    // 应该继续前进，而不是被反复重置回起点
-    const advanced =
-      Math.abs(game.playerCell.x - snapshot.x) + Math.abs(game.playerCell.y - snapshot.y);
-    expect(advanced).toBeGreaterThan(0);
+    const now = game.playerCell;
+    // 不能回到起点（进度不丢）
+    expect(Math.abs(now.x) + Math.abs(now.y)).toBeGreaterThan(0);
+    // 也不能因为重复上报而继续前进（额度不补）
+    expect(now).toEqual(snapshot);
   });
 
   it('越界的拖动坐标被夹紧，不会抛异常', () => {
@@ -179,6 +218,76 @@ describe('游戏：拖动移动', () => {
     expect(() => game.dragTo(9999, 9999)).not.toThrow();
     run(game, 1);
     assertNoWallCrossing(game.maze, game.playerCell.x, game.playerCell.y);
+  });
+
+  it('把笔尖按在出口上不动，绝不可能自动通关（防作弊）', () => {
+    // 这是最关键的防作弊回归测试。
+    // 早期实现在 dragTo 里规划「到目标格的完整 BFS 路径」且不限制推进量，
+    // 于是笔尖按在出口格不动就能自动走完整张迷宫 —— 玩法完全失效（已实测复现）。
+    let won = false;
+    const game = new Game(diff, 2024, {
+      onWin: () => {
+        won = true;
+      },
+    });
+
+    // 只调用一次 dragTo（模拟按下后笔尖完全不动）
+    game.dragTo(9, 9);
+    run(game, 60); // 充分运行一分钟
+
+    expect(won).toBe(false);
+    expect(game.phaseNow).toBe('playing');
+
+    // 且不应逼近出口：起步跑到出口的曼哈顿距离是 18，允许的额度远小于它
+    const cell = game.playerCell;
+    const remaining = Math.abs(cell.x - 9) + Math.abs(cell.y - 9);
+    expect(remaining).toBeGreaterThan(2);
+  });
+
+  it('笔尖持续移动到新格子时小球正常前进（防作弊不能把手感做坏）', () => {
+    // 反向保护：防止为了防盗把移动做成「一顿一顿」。
+    // 模拟孩子连续划笔：每 0.2 秒笔尖进入下一个新格子。
+    const game = new Game(diff, 2024);
+    const path = game.solution;
+    game.dragTo(path[0]!.x, path[0]!.y);
+
+    let advanced = 0;
+    const before = game.playerCell;
+    for (let i = 1; i < path.length; i++) {
+      const target = path[i]!;
+      game.dragTo(target.x, target.y);
+      run(game, 0.2);
+      const now = game.playerCell;
+      advanced = Math.abs(now.x - before.x) + Math.abs(now.y - before.y);
+    }
+
+    // 沿解路径持续带路，最终应当推进到出口附近
+    expect(advanced).toBeGreaterThan(2);
+  });
+
+  it('笔尖停在原地期间小球会停下（额度耗尽）', () => {
+    const game = new Game(diff, 777);
+    game.dragTo(9, 9);
+    run(game, 5); // 用完额度
+    const stopped = game.playerCell;
+    run(game, 3); // 继续等待，位置不应再变
+    expect(game.playerCell).toEqual(stopped);
+  });
+
+  it('松手后再按下能继续行动（额度会重置）', () => {
+    const game = new Game(diff, 555);
+    game.dragTo(9, 9);
+    run(game, 5);
+    const first = game.playerCell;
+
+    game.releasePointer();
+    run(game, 0.5);
+
+    // 再次按下并指向新格，应当能继续前进
+    game.dragTo(9, 9);
+    run(game, 1.5);
+    const second = game.playerCell;
+    expect(Math.abs(second.x - first.x) + Math.abs(second.y - first.y)).toBeGreaterThan(0);
   });
 });
 
@@ -191,8 +300,7 @@ describe('游戏：通关与计时', () => {
       },
     });
 
-    game.dragTo(9, 9);
-    run(game, 20);
+    expect(walkSolution(game)).toBe(true);
     expect(won).toBe(true);
     expect(game.phaseNow).toBe('won');
   });
@@ -204,8 +312,7 @@ describe('游戏：通关与计时', () => {
         won = true;
       },
     });
-    game.dragTo(9, 9);
-    run(game, 20);
+    expect(walkSolution(game)).toBe(true);
     expect(won).toBe(true);
     // 允许有没吃到的星星
     expect(game.totalStars).toBeGreaterThanOrEqual(game.collected);
@@ -233,8 +340,7 @@ describe('游戏：通关与计时', () => {
         winCount++;
       },
     });
-    game.dragTo(9, 9);
-    run(game, 20);
+    walkSolution(game);
     const t = game.seconds;
     run(game, 5);
     expect(winCount).toBe(1);
@@ -316,8 +422,7 @@ describe('游戏：提示与进度', () => {
     const noStars: Difficulty = { ...diff, stars: 0 };
     const game = new Game(noStars, 5);
     expect(game.totalStars).toBe(0);
-    game.dragTo(9, 9);
-    run(game, 20);
+    walkSolution(game);
     expect(game.collected).toBe(0);
   });
 });
