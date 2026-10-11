@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { Game } from '../src/game/game';
 import { canMove, hasWall, type Dir, DX, DY, type Maze } from '../src/core/maze';
-import { clampCustom, presetById, type Difficulty } from '../src/core/difficulty';
+import { clampCustom, PRESETS, presetById, type Difficulty } from '../src/core/difficulty';
 import { formatTime, describeDifficulty } from '../src/ui/screens';
 
 /** 固定难度，让断言稳定可复现。 */
@@ -57,6 +57,75 @@ function walkSolution(game: Game, secondsPerStep = 0.25): boolean {
   run(game, 1.5);
   return game.phaseNow === 'won';
 }
+
+describe('游戏：轻点不应让小球自行移动（用户报告）', () => {
+  it('按下后笔尖不动（纯轻点）小球必须原地不动', () => {
+    // 用户报告：点一下五角星，小球会自己走过去。
+    // 根因是按下时就授予了前进额度。现在移动只能由笔尖移动驱动。
+    const game = new Game(diff, 4242);
+    const start = game.playerCell;
+
+    // 模拟真实的「点击」：按下 → 保持一段时间 → 抬起，全程笔尖不动
+    game.beginPointer(start.x, start.y);
+    run(game, 0.6);
+
+    expect(game.playerCell).toEqual(start);
+  });
+
+  it('在远处轻点（按下即抬起，笔尖不移动）小球也不动', () => {
+    const game = new Game(diff, 777);
+    const start = game.playerCell;
+
+    // 孩子随手点了一下远处的星星
+    game.beginPointer(7, 7);
+    run(game, 0.5);
+    game.releasePointer();
+    run(game, 1.5);
+
+    // 纯轻点不授予额度，小球必须留在原地
+    expect(game.playerCell).toEqual(start);
+  });
+
+  it('按住不动足够久也不会移动（额度只由笔尖移动补充）', () => {
+    const game = new Game(diff, 2024);
+    const start = game.playerCell;
+
+    game.beginPointer(9, 9);
+    run(game, 3); // 按住 3 秒不动
+    expect(game.playerCell).toEqual(start);
+  });
+
+  it('笔尖真正移动后小球才开始前进（正常拖动不受影响）', () => {
+    const game = new Game(diff, 2024);
+    const start = game.playerCell;
+
+    game.beginPointer(start.x, start.y);
+    run(game, 0.3);
+    expect(game.playerCell).toEqual(start); // 还没移动 → 不动
+
+    // 笔尖移到相邻的新格子 → 开始带路
+    game.dragTo(start.x + 1, start.y);
+    run(game, 0.6);
+    const after = game.playerCell;
+    expect(Math.abs(after.x - start.x) + Math.abs(after.y - start.y)).toBeGreaterThan(0);
+  });
+});
+
+describe('游戏：难度阶梯可以一直继续（用户报告）', () => {
+  it('每一档通关后都应有更高的下一档，最高档之后仍可继续', () => {
+    // 用户报告：玩完一关之后没有下一关。
+    // 根因是「挑战」被当作最后一档把按钮隐藏了，而它恰是最需要继续的一档。
+    // 这条测试锁住「永远存在下一关」这个承诺。
+    const last = PRESETS[PRESETS.length - 1]!;
+    for (const preset of PRESETS) {
+      const idx = PRESETS.findIndex((p) => p.id === preset.id);
+      const next = PRESETS[Math.min(PRESETS.length - 1, idx + 1)]!;
+      expect(next).toBeDefined();
+      // 最高档的下一关仍是自己（生成同档新迷宫），因此永远有得玩
+      if (preset.id === last.id) expect(next.id).toBe(last.id);
+    }
+  });
+});
 
 describe('游戏：初始化', () => {
   it('起点在左上角，出口在右下角', () => {

@@ -94,6 +94,8 @@ export class Game {
   private pointerCell: Cell | null = null;
   /** 本轮剩余可前进格数；笔尖每次进入新格子都会重置 */
   private moveBudget = 0;
+  /** 本次按下期间笔尖是否真的移动过（用于区分「拖动」与「轻点」） */
+  private pointerMoved = false;
   private readonly footprints: Footprint[] = [];
   private readonly visitedStamp = new Map<number, number>();
 
@@ -167,7 +169,28 @@ export class Game {
   }
 
   /**
-   * 指针拖动：设定目标格。
+   * 指针按下：只记录落点，**不规划路径、不授予前进额度**。
+   *
+   * 这是「轻点不会让小球自己走」的关键。移动只能由笔尖的移动产生：
+   * 孩子按住小黄球（或随手指一下远处）而笔尖不动时，小球必须原地待命。
+   * 早前在按下时就授予 5 格额度，导致点一下星星小球就自己走过去
+   * （实测：按住不动 600ms 会移动 4 格）。
+   */
+  beginPointer(cellX: number, cellY: number): void {
+    if (this.phase !== 'playing') return;
+
+    this.pointerCell = {
+      x: clamp(Math.floor(cellX), 0, this.maze.cols - 1),
+      y: clamp(Math.floor(cellY), 0, this.maze.rows - 1),
+    };
+    this.pointerMoved = false;
+    this.targetCell = null;
+    this.path = [];
+    this.moveBudget = 0;
+  }
+
+  /**
+   * 指针拖动：笔尖进入新格子时才规划路径并补充额度。
    *
    * 防作弊的关键：**只有笔尖真的移动到新格子，才重新规划路径并补充前进额度**。
    * 笔尖停在原地不换格时这里直接返回，小球用完当前额度就停住 ——
@@ -184,6 +207,7 @@ export class Game {
     if (sameCell) return; // 笔尖没换格 → 不重算、不补充额度
 
     this.pointerCell = { x: tx, y: ty };
+    this.pointerMoved = true;
     // 笔尖进入新格子：补充前进额度，并重算到该格的路径
     this.moveBudget = MOVE_BURST_CELLS;
 
@@ -201,11 +225,15 @@ export class Game {
     this.path = solve(this.maze, from, this.targetCell);
   }
 
-  /** 松手：停止跟随，但保留一格缓冲让小人优雅停下，而不是骤然急停。 */
+  /**
+   * 松手：停止跟随，但保留一格缓冲让小人优雅停下，而不是骤然急停。
+   *
+   * 纯轻点（笔尖自始至终没换过格）不授予任何额度，小球必须原地不动。
+   */
   releasePointer(): void {
     this.targetCell = null;
     this.pointerCell = null;
-    this.moveBudget = 1;
+    this.moveBudget = this.pointerMoved ? 1 : 0;
     if (this.path.length > 1) this.path = this.path.slice(0, 2);
   }
 

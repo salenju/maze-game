@@ -437,9 +437,16 @@ class App {
       mazeCells: this.game.mazeCellCount,
     });
 
-    // 已经是最后一档就不再显示「下一关」
+    // 「下一关」始终可用。
+    //
+    // 早前在最后一档（挑战）隐藏了这个按钮，理由是想避免「升到顶」的困惑，
+    // 但实测后果是：孩子玩到 18×18 通关后就没有任何继续的入口了 ——
+    // 这恰是最需要「再来一关」的时刻（用户报告「玩完一关怎么没有下一关」）。
+    // 现在最高档通关后继续生成同档的新迷宫，保证永远有下一关可玩。
     const nextBtn = must<HTMLButtonElement>('#btn-next');
-    nextBtn.hidden = this.difficulty.id === (PRESETS[PRESETS.length - 1] as Difficulty).id;
+    nextBtn.hidden = false;
+    const atTop = this.difficulty.id === (PRESETS[PRESETS.length - 1] as Difficulty).id;
+    nextBtn.textContent = atTop ? '再来一关' : '下一关';
 
     this.screens.show('win');
   }
@@ -467,7 +474,11 @@ class App {
     this.audio.unlock();
     this.recordPointerType(sample.pointerType);
     this.dragging = true;
-    this.applyPointer(sample);
+    // 只记录落点，不授予前进额度：
+    // 这样「轻点一下」不会让小球自己走过去，移动必须由笔尖移动驱动。
+    const cell = this.renderer.toCellCoords(sample.x, sample.y);
+    this.targetCell = { x: Math.floor(cell.x), y: Math.floor(cell.y) };
+    this.game?.beginPointer(cell.x, cell.y);
   }
 
   private onPointerMove(samples: PointerSample[]): void {
@@ -594,6 +605,31 @@ class App {
     };
   }
 
+  /**
+   * 小球在解路径上已推进的「解路径步数」。
+   *
+   * 为什么需要它：每次开局都用随机种子生成迷宫，
+   * 因此「小球走了几格」这种绝对数值跨次运行不可比
+   * （两次跑的根本是不同迷宫，起终点距离不同）。
+   * 用「解路径上的位置」这类相对量才能稳定衡量拖动是否跟手。
+   */
+  debugSolutionProgress(): { index: number; total: number } {
+    const g = this.game;
+    if (!g) return { index: 0, total: 0 };
+    const cur = g.playerCell;
+    let best = 0;
+    let bestDist = Number.POSITIVE_INFINITY;
+    for (let i = 0; i < g.solution.length; i++) {
+      const c = g.solution[i] as { x: number; y: number };
+      const d = Math.abs(c.x - cur.x) + Math.abs(c.y - cur.y);
+      if (d < bestDist) {
+        bestDist = d;
+        best = i;
+      }
+    }
+    return { index: best, total: g.solution.length };
+  }
+
   /** 提示箭头当前是否可见（自动化验收用）。 */
   debugHintVisible(): boolean {
     return this.game?.showHint ?? false;
@@ -643,6 +679,7 @@ try {
     lastPointerTypes: () => app.debugPointerTypes(),
     solution: () => app.debugSolution(),
     cellToScreen: (x: number, y: number) => app.debugCellToScreen(x, y),
+    solutionProgress: () => app.debugSolutionProgress(),
     hintVisible: () => app.debugHintVisible(),
     hintNext: () => app.debugHintNext(),
   };

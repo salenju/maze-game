@@ -118,6 +118,9 @@ node scripts/measure-layout.mjs     # 横竖屏与旋转布局测量
 node scripts/measure-limits.mjs     # 极端尺寸、性能、切后台自动暂停
 node scripts/measure-features.mjs   # 星星收集与提示箭头
 node scripts/measure-audio.mjs      # 音频解锁与静默降级
+node scripts/measure-pwa.mjs        # PWA 安装硬性条件
+node scripts/repro-user-issues.mjs  # 复现用户报告的两个问题
+node scripts/repro-ladder.mjs       # 难度阶梯与轻点行为复现
 node scripts/verify-live.mjs       # 对线上 GitHub Pages 做等价验收
 ```
 
@@ -148,6 +151,24 @@ curl -X POST -H "Authorization: Bearer <token>" \
 
 ---
 
+## 来自真实使用的反馈修复
+
+孩子实际玩过之后报告的两个问题，均已复现并修复：
+
+**1. 「玩完一关之后怎么没有下一关？」**
+难度阶梯本是 `7×7 → 10×10 → 14×14 → 18×18`，但代码把「挑战」当成最后一档
+并隐藏了「下一关」按钮 —— 恰好在孩子最想继续的时候断掉了。
+实测重现：连续点「下一关」到第 4 关（18×18）按钮即消失。
+现改为**永远可以继续**：最高档通关后生成同档新迷宫，按钮文案变为「再来一关」。
+
+**2. 「点击五角星会自动走过去」**
+根因是 `dragTo` 在笔尖按下时就授予了 5 格前进额度，
+于是孩子只是点了一下星星，小球就自己跑过去了。
+实测：按住不动 600ms 会移动 4 格。
+现改为**移动只能由笔尖移动驱动**：新增 `beginPointer()` 只记录落点、不授予额度，
+纯轻点（笔尖自始至终没换格）小球原地不动。
+修复后实测按住 60/150/300/600ms 均移动 **0 格**，而正常拖动的手感不受影响。
+
 ## 实测已验证的行为
 
 以下均由 `scripts/*.mjs` 在真实浏览器（Chromium + WebKit 双引擎）中实测确认：
@@ -165,6 +186,8 @@ curl -X POST -H "Authorization: Bearer <token>" \
 | 离线可玩 | 断网后重新加载仍可进入 |
 | 暂停后继续 | 画笔与主循环均正常恢复（曾在此丢过输入挂载） |
 | 无音频设备 | 静默降级，玩法完全不受影响 |
+| 难度阶梯 | 连续通关 6 关，每关都有「下一关」 |
+| 轻点不自行移动 | 按住不动 60/150/300/600ms → 均移动 0 格 |
 
 ## 已知平台限制（不是缺陷，是 iOS 的限制）
 

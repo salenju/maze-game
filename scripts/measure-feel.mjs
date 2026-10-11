@@ -77,32 +77,40 @@ async function gesture(name, steps, delayMs, holdMs) {
   const after = await page.evaluate(() => window.__mazeDebug.playerCell());
   const travelled = Math.abs(after.x - before.x) + Math.abs(after.y - before.y);
 
+  // 相对进度：每次开局的迷宫都是随机的，
+  // 绝对格数跨次运行不可比（不同迷宫的起终点距离不同），
+  // 因此用「在解路径上推进了多少步」来衡量拖动是否跟手。
+  const prog = await page.evaluate(() => window.__mazeDebug.solutionProgress());
+
   await cdp.send('Input.dispatchMouseEvent', {
     type: 'mouseReleased', x: start.x, y: start.y, button: 'left',
     buttons: 0, clickCount: 1, pointerType: 'pen', force: 0,
   });
   await ctx.close();
-  return { travelled, before, after, name };
+  return { travelled, before, after, name, prog };
 }
 
 console.log('\n【A】慢速划笔：每格停顿 260ms，共 6 格');
 const a = await gesture('slow', 6, 260, 300);
-check('慢速划笔小球能跟上', a.travelled >= 3,
-  `推进 ${a.travelled} 格 (${a.before.x},${a.before.y}) → (${a.after.x},${a.after.y})`);
+// 笔尖走了 6 步，小球理应跟上绝大部分（留 1 步余量给滑行时间）
+check('慢速划笔小球能跟上', a.prog.index >= 5,
+  `解路径推进 ${a.prog.index}/${a.prog.total} 步（笔尖走了 6 步）`);
 
 console.log('\n【B】快速划笔：每格仅 25ms，共 8 格');
 const b = await gesture('fast', 8, 25, 900);
-check('快速划笔小球能跟上', b.travelled >= 3,
-  `推进 ${b.travelled} 格 (${b.before.x},${b.before.y}) → (${b.after.x},${b.after.y})`);
+// 快速划笔时笔尖推进得比小球快，小球靠额度追赶，应推进可观距离
+check('快速划笔小球能跟上', b.prog.index >= 3,
+  `解路径推进 ${b.prog.index}/${b.prog.total} 步（笔尖快速走了 8 步）`);
 
 console.log('\n【C】一笔到底：每格 60ms，走到解路径尽头');
 const c = await gesture('long', 40, 60, 1500);
-check('长距离连续划笔小球持续推进', c.travelled >= 8,
-  `推进 ${c.travelled} 格 (${c.before.x},${c.before.y}) → (${c.after.x},${c.after.y})`);
+// 一笔到底：小球应沿解路径推进相当比例，而不是走走停停
+check('长距离连续划笔小球持续推进', c.prog.index >= 6,
+  `解路径推进 ${c.prog.index}/${c.prog.total} 步（笔尖连续走了 40 步）`);
 
 console.log('\n【D】防盗闸门：只按一下、笔尖完全不动');
 const d = await gesture('hold', 0, 0, 6000);
-check('笔尖不动时小球不会自行走远', d.travelled <= 2,
+check('笔尖不动时小球不会自行走远', d.travelled === 0,
   `推进 ${d.travelled} 格 (${d.before.x},${d.before.y}) → (${d.after.x},${d.after.y})`);
 
 await browser.close();
