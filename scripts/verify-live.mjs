@@ -34,11 +34,53 @@ const styled = await page.evaluate(() => {
 });
 check('CSS 已生效（按钮有样式）', styled === '64px', `min-height=${styled}`);
 
+/*
+ * 等待 SW 就绪，而不是固定 sleep。
+ * 首次访问线上站点时 SW 要下载+安装+激活，固定等待会采到中间态并误报失败
+ * （曾出现线上检查报 active=false、缓存仅 7 项的假告警）。
+ */
+await page.evaluate(async () => {
+  await Promise.race([
+    navigator.serviceWorker.ready,
+    new Promise((_, reject) => setTimeout(() => reject(new Error('SW ready 超时')), 20000)),
+  ]);
+});
 const sw = await page.evaluate(async () => {
   const r = await navigator.serviceWorker.getRegistration();
   return r ? (r.active ? 'active' : 'registered') : 'none';
 });
-check('线上 Service Worker 已注册', sw === 'active' || sw === 'registered', sw);
+check('线上 Service Worker 已激活', sw === 'active', sw);
+
+const cachedLive = await page.evaluate(async () => {
+  const names = await caches.keys();
+  let n = 0;
+  for (const name of names) {
+    const c = await caches.open(name);
+    n += (await c.keys()).length;
+  }
+  return n;
+});
+check('线上已预缓存 app shell（≥10 项）', cachedLive >= 10, `${cachedLive} 项`);
+
+// 图标必须真的可加载：路径写错时 manifest 仍合法但装不上
+const liveIcons = await page.evaluate(async () => {
+  const m = await (await fetch('/maze-game/manifest.webmanifest')).json();
+  const out = [];
+  for (const i of m.icons) {
+    const r = await fetch('/maze-game/' + i.src.replace(/^\//, ''));
+    out.push(`${i.src}:${r.status}`);
+  }
+  return out;
+});
+check('线上所有图标可加载', liveIcons.every((x) => x.endsWith(':200')), liveIcons.join(' '));
+
+const liveApple = await page.evaluate(async () => {
+  const l = document.querySelector('link[rel="apple-touch-icon"]');
+  if (!l) return null;
+  const r = await fetch(l.getAttribute('href'));
+  return r.status;
+});
+check('线上 apple-touch-icon 可加载', liveApple === 200, String(liveApple));
 
 const mf = await page.evaluate(async () => (await fetch('/maze-game/manifest.webmanifest')).json());
 check('线上 manifest 正确', mf.start_url === '/maze-game/' && mf.display === 'standalone');
