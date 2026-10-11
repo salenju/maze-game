@@ -1,0 +1,19 @@
+# 依赖与构建产物
+node_modules/
+dist/
+dist-ssr/
+
+# 验收截图（可重新生成，不必入库）
+artifacts/
+
+# 日志与本地环境
+*.log
+npm-debug.log*
+.DS_Store
+.env
+.env.local
+
+# 编辑器
+.vscode/*
+!.vscode/extensions.json
+.idea/

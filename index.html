@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+
+    <!--
+      viewport-fit=cover 配合 CSS 的 safe-area-inset-*，
+      避免 iPad 圆角与 Home 指示条挡住迷宫边缘。
+      user-scalable=no 是儿童应用的必需项：孩子握着笔时极易误触双指缩放，
+      一旦页面被缩放，整个迷宫坐标系就全乱了。
+    -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+    />
+
+    <title>迷宫大冒险</title>
+    <meta name="description" content="为 6-10 岁小朋友设计的触控笔迷宫游戏，支持离线游玩。" />
+
+    <!-- PWA 清单。start_url 与 scope 用相对路径，以适配 GitHub Pages 的 /maze-game/ 子路径 -->
+    <link rel="manifest" href="manifest.webmanifest" />
+    <meta name="theme-color" content="#0f1729" />
+
+    <!-- iOS 专属：Safari 不读 manifest 的 display，只认这些 apple-* 前缀标签 -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="迷宫大冒险" />
+    <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
+
+    <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png" />
+  </head>
+  <body>
+    <div id="app">
+      <!-- 首页 -->
+      <section class="screen" id="screen-home" data-screen="home">
+        <div class="home-inner">
+          <h1 class="title">迷宫大冒险</h1>
+          <p class="subtitle">用笔尖带着小黄球走出迷宫</p>
+          <div class="home-actions">
+            <button class="btn btn-primary" id="btn-play">开始游戏</button>
+            <button class="btn" id="btn-difficulty">难度设置</button>
+            <button class="btn" id="btn-settings">声音与辅助</button>
+            <button class="btn btn-ghost" id="btn-howto">怎么玩</button>
+          </div>
+          <div class="stats" id="home-stats"></div>
+        </div>
+      </section>
+
+      <!-- 难度选择 -->
+      <section class="screen" id="screen-difficulty" data-screen="difficulty">
+        <header class="bar">
+          <button class="btn btn-icon" data-back aria-label="返回">‹</button>
+          <h2>选择难度</h2>
+          <span class="spacer"></span>
+        </header>
+        <div class="scroll">
+          <div class="diff-list" id="diff-list"></div>
+          <div class="custom-panel" id="custom-panel"></div>
+        </div>
+        <footer class="bar bottom">
+          <button class="btn btn-primary wide" id="btn-start">开始</button>
+        </footer>
+      </section>
+
+      <!-- 游戏 -->
+      <section class="screen screen-game" id="screen-game" data-screen="game">
+        <header class="hud" id="hud">
+          <button class="btn btn-icon" id="btn-pause" aria-label="暂停">❚❚</button>
+          <div class="hud-center">
+            <span class="hud-diff" id="hud-diff"></span>
+            <span class="hud-time" id="hud-time">0:00</span>
+          </div>
+          <div class="hud-stars" id="hud-stars"></div>
+        </header>
+        <div class="canvas-wrap" id="canvas-wrap">
+          <canvas id="maze-canvas"></canvas>
+        </div>
+        <p class="hint-bar" id="hint-bar">按住笔尖，带着小黄球走</p>
+      </section>
+
+      <!-- 结算 -->
+      <section class="screen overlay" id="screen-win" data-screen="win">
+        <div class="card">
+          <h2 id="win-title">走出迷宫啦！</h2>
+          <div class="win-stars" id="win-stars"></div>
+          <dl class="win-stats" id="win-stats"></dl>
+          <div class="card-actions">
+            <button class="btn btn-primary" id="btn-next">下一关</button>
+            <button class="btn" id="btn-retry">再玩一次</button>
+            <button class="btn btn-ghost" id="btn-home">回首页</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- 暂停 -->
+      <section class="screen overlay" id="screen-pause" data-screen="pause">
+        <div class="card">
+          <h2>休息一下</h2>
+          <div class="card-actions">
+            <button class="btn btn-primary" id="btn-resume">继续玩</button>
+            <button class="btn" id="btn-restart">重新开始</button>
+            <button class="btn btn-ghost" id="btn-quit">回首页</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- 声音与辅助设置 -->
+      <section class="screen overlay" id="screen-settings" data-screen="settings">
+        <div class="card">
+          <h2>声音与辅助</h2>
+          <div class="settings-list" id="settings-list"></div>
+          <div class="card-actions">
+            <button class="btn btn-primary" id="btn-settings-ok">好啦</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- 玩法引导 -->
+      <section class="screen overlay" id="screen-howto" data-screen="howto">
+        <div class="card">
+          <h2>怎么玩</h2>
+          <ol class="howto-list">
+            <li><span class="howto-num">1</span>用笔尖按住小黄球</li>
+            <li><span class="howto-num">2</span>把笔尖移到想去的方向，小黄球会顺着走廊滑过去</li>
+            <li><span class="howto-num">3</span>球只会走路，不会穿墙，所以慢一点也没关系</li>
+            <li><span class="howto-num">4</span>到绿色小旗就算走出迷宫</li>
+          </ol>
+          <div class="card-actions">
+            <button class="btn btn-primary" id="btn-howto-ok">我知道啦</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- iOS「添加到主屏幕」引导：iOS 没有安装提示 API，只能靠图示 -->
+      <section class="screen overlay" id="screen-install" data-screen="install">
+        <div class="card">
+          <h2>装到平板上玩</h2>
+          <p class="muted" id="install-lead"></p>
+          <ol class="howto-list" id="install-steps"></ol>
+          <div class="card-actions">
+            <button class="btn btn-primary" id="btn-install-now" hidden>立即安装</button>
+            <button class="btn" id="btn-install-ok">知道啦</button>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
