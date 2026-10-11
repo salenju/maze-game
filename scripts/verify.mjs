@@ -411,12 +411,16 @@ async function runFullClear(browser) {
     check('已记录最佳成绩', progress?.best?.starter !== undefined,
       JSON.stringify(progress?.best ?? null));
 
-    // 「下一关」应进入更高一档难度
+    // 「换个新迷宫」= 同一难度换新地图（不是升难度）。
+    // 早前这里断言的是 7x7 → 10x10 的升档行为，那已被用户澄清为错误设计。
+    const beforeSig = await page.evaluate(() => window.__mazeDebug.wallSignature());
     await page.click('#btn-next');
     await page.waitForTimeout(800);
     const nextInfo = await page.evaluate(() => window.__mazeDebug.mazeInfo());
-    check('「下一关」切到更高难度（10x10）',
-      nextInfo.cols === 10 && nextInfo.rows === 10, `${nextInfo.cols}x${nextInfo.rows}`);
+    const afterSig = await page.evaluate(() => window.__mazeDebug.wallSignature());
+    check('「换个新迷宫」保持同一难度（不升档）',
+      nextInfo.cols === 7 && nextInfo.rows === 7, `${nextInfo.cols}x${nextInfo.rows}`);
+    check('「换个新迷宫」确实换了张新地图', beforeSig !== afterSig);
     await page.screenshot({ path: 'artifacts/10-next-level.png' });
 
     // 回首页应看到战绩，并弹出一次安装引导

@@ -86,8 +86,11 @@
           <div class="win-stars" id="win-stars"></div>
           <dl class="win-stats" id="win-stats"></dl>
           <div class="card-actions">
-            <button class="btn btn-primary" id="btn-next">下一关</button>
-            <button class="btn" id="btn-retry">再玩一次</button>
+            <!-- 两个按钮语义必须一眼能分清：
+                 「换个新迷宫」= 同一难度换新地图（孩子最常点的）
+                 「再走一遍」   = 同一张地图重来，用来刷新纪录 -->
+            <button class="btn btn-primary" id="btn-next">换个新迷宫</button>
+            <button class="btn" id="btn-retry">再走一遍这张</button>
             <button class="btn btn-ghost" id="btn-home">回首页</button>
           </div>
         </div>

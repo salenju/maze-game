@@ -157,14 +157,18 @@ class App {
     must('#btn-quit').addEventListener('click', () => this.showHome());
 
     // 结算
+    // 「下一关」= 同一难度换一张新地图（不是升难度）。
+    // 早前误把它做成升难度阶梯（7x7 → 10x10 → …），但那不是孩子的预期：
+    // 他们想在同一难度下一直玩新地图。换难度是家长在「难度设置」里做的事。
     must('#btn-next').addEventListener('click', () => {
       this.audio.play('click');
-      const next = this.nextDifficulty();
-      this.startGame(next, Game.newSeed());
+      this.startGame(this.difficulty, Game.newSeed());
     });
+    // 「再玩一次」= 同一难度、同一张地图。
+    // 用同一个种子重开，孩子可以带着记忆再走一遍、刷新自己的纪录。
     must('#btn-retry').addEventListener('click', () => {
       this.audio.play('click');
-      this.startGame(this.difficulty, Game.newSeed());
+      this.startGame(this.difficulty, this.game?.seed ?? Game.newSeed());
     });
     must('#btn-home').addEventListener('click', () => this.showHome());
 
@@ -316,12 +320,6 @@ class App {
     );
   }
 
-  private nextDifficulty(): Difficulty {
-    const idx = PRESETS.findIndex((p) => p.id === this.difficulty.id);
-    if (idx < 0) return this.difficulty;
-    return PRESETS[Math.min(PRESETS.length - 1, idx + 1)] as Difficulty;
-  }
-
   private isInstalled(): boolean {
     const nav = navigator as Navigator & { standalone?: boolean };
     return nav.standalone === true || matchMedia('(display-mode: standalone)').matches;
@@ -437,16 +435,12 @@ class App {
       mazeCells: this.game.mazeCellCount,
     });
 
-    // 「下一关」始终可用。
-    //
-    // 早前在最后一档（挑战）隐藏了这个按钮，理由是想避免「升到顶」的困惑，
-    // 但实测后果是：孩子玩到 18×18 通关后就没有任何继续的入口了 ——
-    // 这恰是最需要「再来一关」的时刻（用户报告「玩完一关怎么没有下一关」）。
-    // 现在最高档通关后继续生成同档的新迷宫，保证永远有下一关可玩。
-    const nextBtn = must<HTMLButtonElement>('#btn-next');
-    nextBtn.hidden = false;
-    const atTop = this.difficulty.id === (PRESETS[PRESETS.length - 1] as Difficulty).id;
-    nextBtn.textContent = atTop ? '再来一关' : '下一关';
+    // 结算页三个按钮的语义（清晰区分，避免孩子困惑）：
+    //   下一关   → 同一难度，换一张新地图（永远可用）
+    //   再玩一次 → 同一难度，同一张地图，用来刷新纪录
+    //   回首页   → 回家
+    // 不再有「升到顶就隐藏按钮」的逻辑：任何难度下都永远可以继续玩。
+    must<HTMLButtonElement>('#btn-next').hidden = false;
 
     this.screens.show('win');
   }
@@ -630,6 +624,26 @@ class App {
     return { index: best, total: g.solution.length };
   }
 
+  /**
+   * 当前迷宫的墙体签名（自动化验收用）。
+   *
+   * 用于比较两次开局拿到的是不是同一张地图：
+   * 换地图靠换种子，因此签名变化即证明地图确实换了；
+   * 「再走一遍这张」要求签名完全一致。
+   */
+  debugWallSignature(): string {
+    const g = this.game;
+    if (!g) return '';
+    let sum = 0;
+    let hash = 0;
+    for (let i = 0; i < g.maze.walls.length; i++) {
+      const w = g.maze.walls[i] as number;
+      sum += w;
+      hash = (hash * 31 + w) >>> 0;
+    }
+    return `${g.maze.cols}x${g.maze.rows}:${sum}:${hash}`;
+  }
+
   /** 提示箭头当前是否可见（自动化验收用）。 */
   debugHintVisible(): boolean {
     return this.game?.showHint ?? false;
@@ -680,6 +694,7 @@ try {
     solution: () => app.debugSolution(),
     cellToScreen: (x: number, y: number) => app.debugCellToScreen(x, y),
     solutionProgress: () => app.debugSolutionProgress(),
+    wallSignature: () => app.debugWallSignature(),
     hintVisible: () => app.debugHintVisible(),
     hintNext: () => app.debugHintNext(),
   };

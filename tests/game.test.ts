@@ -111,19 +111,46 @@ describe('游戏：轻点不应让小球自行移动（用户报告）', () => {
   });
 });
 
-describe('游戏：难度阶梯可以一直继续（用户报告）', () => {
-  it('每一档通关后都应有更高的下一档，最高档之后仍可继续', () => {
-    // 用户报告：玩完一关之后没有下一关。
-    // 根因是「挑战」被当作最后一档把按钮隐藏了，而它恰是最需要继续的一档。
-    // 这条测试锁住「永远存在下一关」这个承诺。
-    const last = PRESETS[PRESETS.length - 1]!;
+describe('「下一关」= 同一难度换新地图（用户澄清）', () => {
+  it('同一难度配不同种子会生成不同地图', () => {
+    // 用户澄清：「下一关」不是升难度，而是在同一难度下重新生成一张地图。
+    // 因此换地图靠的是换种子，而不是换 Difficulty。
+    const a = new Game(diff, 1001);
+    const b = new Game(diff, 2002);
+
+    expect(a.difficulty.id).toBe(b.difficulty.id);
+    expect(Array.from(a.maze.walls)).not.toEqual(Array.from(b.maze.walls));
+  });
+
+  it('「再走一遍这张」用同一种子，地图与星星完全一致', () => {
+    // 同一难度 + 同一种子 = 同一张地图，孩子可带着记忆重来、刷新纪录
+    const first = new Game(diff, 777);
+    const again = new Game(diff, 777);
+
+    expect(Array.from(again.maze.walls)).toEqual(Array.from(first.maze.walls));
+    expect(again.starCells).toEqual(first.starCells);
+    expect(again.maze.start).toEqual(first.maze.start);
+    expect(again.maze.exit).toEqual(first.maze.exit);
+  });
+
+  it('任何难度档都能用新种子继续生成新地图（不存在「到顶」）', () => {
+    // 早前把「挑战」当最后一档隐藏按钮，导致孩子走到 18x18 后没有入口。
+    // 现在每个档位都能无限换新地图，包括最高档与自定义。
     for (const preset of PRESETS) {
-      const idx = PRESETS.findIndex((p) => p.id === preset.id);
-      const next = PRESETS[Math.min(PRESETS.length - 1, idx + 1)]!;
-      expect(next).toBeDefined();
-      // 最高档的下一关仍是自己（生成同档新迷宫），因此永远有得玩
-      if (preset.id === last.id) expect(next.id).toBe(last.id);
+      const seeds = [11, 22, 33];
+      const wallSets = seeds.map((s) => Array.from(new Game(preset, s).maze.walls).join(','));
+      expect(new Set(wallSets).size).toBeGreaterThan(1);
     }
+  });
+
+  it('换地图不会改变难度参数本身', () => {
+    const g1 = new Game(diff, 5);
+    const g2 = new Game(diff, 6);
+    expect(g2.difficulty.cols).toBe(g1.difficulty.cols);
+    expect(g2.difficulty.rows).toBe(g1.difficulty.rows);
+    expect(g2.difficulty.braid).toBe(g1.difficulty.braid);
+    expect(g2.difficulty.footprint).toBe(g1.difficulty.footprint);
+    expect(g2.difficulty.timed).toBe(g1.difficulty.timed);
   });
 });
 

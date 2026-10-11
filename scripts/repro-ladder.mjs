@@ -64,9 +64,9 @@ async function clearMaze(page, cdp) {
   await page.waitForTimeout(900);
 }
 
-// ---------- 1. 完整难度阶梯 ----------
+// ---------- 1. 连续换新地图 ----------
 {
-  console.log('\n【1】难度阶梯：连续点「下一关」直到走不动');
+  console.log('\n【1】连续点「换个新迷宫」：难度不变、地图持续更新、永远可继续');
   const ctx = await browser.newContext({ ...devices['iPad Pro 11'], hasTouch: true });
   const page = await ctx.newPage();
   const cdp = await ctx.newCDPSession(page);
@@ -75,23 +75,23 @@ async function clearMaze(page, cdp) {
   await page.click('#btn-play'); await page.waitForTimeout(250);
   await page.click('#btn-howto-ok'); await page.waitForTimeout(700);
 
-  const ladder = [];
+  const rounds = [];
+  const signatures = new Set();
   for (let step = 0; step < 6; step++) {
     await clearMaze(page, cdp);
     if (!(await page.isVisible('#screen-win'))) {
-      ladder.push({ step, won: false });
-      check(`第 ${step + 1} 关通关`, false, '未能通关');
+      check(`第 ${step + 1} 次通关`, false, '未能通关');
       break;
     }
     const info = await page.evaluate(() => window.__mazeDebug.mazeInfo());
+    const sig = await page.evaluate(() => window.__mazeDebug.wallSignature());
     const nextVisible = await page.locator('#btn-next').isVisible();
-    const nextDisabled = nextVisible ? await page.locator('#btn-next').isDisabled() : true;
-    ladder.push({ step, size: `${info.cols}x${info.rows}`, nextVisible, nextDisabled });
-    console.log(`    第 ${step + 1} 关：迷宫 ${info.cols}x${info.rows}，下一关按钮=${nextVisible ? '可见' : '隐藏'}`);
+    signatures.add(sig);
+    rounds.push({ step, size: `${info.cols}x${info.rows}`, nextVisible });
+    console.log(`    第 ${step + 1} 次：迷宫 ${info.cols}x${info.rows}，按钮=${nextVisible ? '可见' : '隐藏'}，签名=${sig.slice(0, 16)}…`);
 
     if (!nextVisible) {
-      check(`第 ${step + 1} 关（最后一档）仍应有「下一关」`, false,
-        '按钮被隐藏，孩子无法继续玩 ← 复现问题 1');
+      check(`第 ${step + 1} 次通关后仍应有继续入口`, false, '按钮被隐藏 ← 问题');
       break;
     }
     if (step < 5) {
@@ -99,7 +99,15 @@ async function clearMaze(page, cdp) {
       await page.waitForTimeout(800);
     }
   }
-  console.log('    阶梯记录：', JSON.stringify(ladder));
+
+  // 全部 6 次都应是同一难度尺寸（入门 7x7），且地图各不相同
+  const allSameSize = rounds.every((r) => r.size === '7x7');
+  check('连续换地图始终停留在同一难度（7x7，不升档）', allSameSize,
+    rounds.map((r) => r.size).join(' → '));
+  check('连续 6 次的地图互不相同（每次都换新图）', signatures.size === rounds.length,
+    `${signatures.size} 种不同地图 / 共 ${rounds.length} 次`);
+  check('6 次通关后按钮始终可用（不存在到顶）',
+    rounds.every((r) => r.nextVisible), `共 ${rounds.length} 次`);
   await ctx.close();
 }
 
