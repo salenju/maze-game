@@ -561,15 +561,3 @@ export function detectPlatform(): 'ios-safari' | 'ios-other' | 'android' | 'desk
   if (/Android/.test(ua)) return 'android';
   return 'desktop';
 }
-
-/** 是否已经处于「已安装」的独立窗口模式。 */
-export function isStandalone(): boolean {
-  const nav = globalThis.navigator as (Navigator & { standalone?: boolean }) | undefined;
-  if (nav?.standalone === true) return true;
-  return globalThis.matchMedia?.('(display-mode: standalone)').matches === true;
-}
-
-export function applyPrefsToUI(prefs: Prefs): void {
-  // 目前只有音效需要在启动时同步到音频层，由 main.ts 处理
-  void prefs;
-}

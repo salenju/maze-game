@@ -114,6 +114,9 @@ node scripts/verify.mjs            # 真浏览器验收：笔事件 / PWA / 离�
 node scripts/verify-slider.mjs     # 家长自定义滑块专项验证
 node scripts/measure-gameplay.mjs  # 玩法质量测量（防作弊、引导页副作用）
 node scripts/measure-feel.mjs      # 拖动手感测量（慢/快/长划笔 + 防盗闸门）
+node scripts/measure-layout.mjs     # 横竖屏与旋转布局测量
+node scripts/measure-limits.mjs     # 极端尺寸、性能、切后台自动暂停
+node scripts/measure-features.mjs   # 星星收集与提示箭头
 node scripts/verify-live.mjs       # 对线上 GitHub Pages 做等价验收
 ```
 
@@ -143,6 +146,23 @@ curl -X POST -H "Authorization: Bearer <token>" \
 ```
 
 ---
+
+## 实测已验证的行为
+
+以下均由 `scripts/*.mjs` 在真实浏览器（Chromium + WebKit 双引擎）中实测确认：
+
+| 行为 | 实测结果 |
+|---|---|
+| 触控笔拖动 | CDP 发送真实 `pointerType=pen` 事件可驱动小球 |
+| 按住不动不可通关 | 笔尖按在出口 8 秒，推进 0 格 |
+| 手感不受防盗闸门影响 | 慢速划笔推进 6 格、快速 7 格、长划 9 格 |
+| 竖屏 / 横屏 / 游戏中旋转 | 均正常重排，旋转后笔仍可用 |
+| 极端尺寸 | 6×6 与 24×24 均正常；24×24 平均帧间隔 16.4ms |
+| 切后台自动暂停 | 后台停留 2 秒计时冻结，回前台仍停在暂停页 |
+| 星星收集 | 沿解路径走可收集 3/3 颗，HUD 同步更新 |
+| 提示箭头 | 入门档 10 秒后出现且指向相邻合法格；挑战档不出现 |
+| 离线可玩 | 断网后重新加载仍可进入 |
+| 暂停后继续 | 画笔与主循环均正常恢复（曾在此丢过输入挂载） |
 
 ## 已知平台限制（不是缺陷，是 iOS 的限制）
 

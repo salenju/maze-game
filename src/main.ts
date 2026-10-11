@@ -551,7 +551,10 @@ class App {
     cols: number;
     rows: number;
     footprints: number;
-    stars: number;
+    /** 本局星星总数（固定值，不随收集变化） */
+    starsTotal: number;
+    /** 已吃到的星星数 */
+    starsCollected: number;
     cell: number;
   } {
     const g = this.game;
@@ -559,7 +562,10 @@ class App {
       cols: g?.maze.cols ?? 0,
       rows: g?.maze.rows ?? 0,
       footprints: g?.footprintList().length ?? 0,
-      stars: g?.totalStars ?? 0,
+      // 刻意区分总数与已收集数：早先只暴露一个含糊的 stars 字段，
+      // 验收脚本把它当成「剩余」来断言，导致明明吃到星星却判为失败。
+      starsTotal: g?.totalStars ?? 0,
+      starsCollected: g?.collected ?? 0,
       cell: this.renderer.cell,
     };
   }
@@ -586,6 +592,17 @@ class App {
       x: rect.left + origin.x + (x + 0.5) * cell,
       y: rect.top + origin.y + (y + 0.5) * cell,
     };
+  }
+
+  /** 提示箭头当前是否可见（自动化验收用）。 */
+  debugHintVisible(): boolean {
+    return this.game?.showHint ?? false;
+  }
+
+  /** 提示箭头指向的下一格（自动化验收用）。 */
+  debugHintNext(): { x: number; y: number } | null {
+    const next = this.game?.hintNextStep() ?? null;
+    return next ? { x: next.x, y: next.y } : null;
   }
 
   private frame(dt: number): void {
@@ -626,6 +643,8 @@ try {
     lastPointerTypes: () => app.debugPointerTypes(),
     solution: () => app.debugSolution(),
     cellToScreen: (x: number, y: number) => app.debugCellToScreen(x, y),
+    hintVisible: () => app.debugHintVisible(),
+    hintNext: () => app.debugHintNext(),
   };
 } catch (error) {
   // 平板上没有控制台，把错误直接画到页面上，方便远程排查

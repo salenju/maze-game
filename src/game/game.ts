@@ -158,11 +158,6 @@ export class Game {
     return this.footprints;
   }
 
-  visitedAt(x: number, y: number): number | null {
-    const v = this.visitedStamp.get(cellIndex(this.maze, x, y));
-    return v === undefined ? null : v;
-  }
-
   pause(): void {
     if (this.phase === 'playing') this.phase = 'paused';
   }
@@ -369,12 +364,6 @@ export class Game {
     const route = solve(this.maze, this.playerCell, this.maze.exit);
     if (route.length < 2) return null;
     return route[1] ?? null;
-  }
-
-  /** 当前位置到出口还剩几格。 */
-  remainingSteps(): number {
-    const route = solve(this.maze, this.playerCell, this.maze.exit);
-    return Math.max(0, route.length - 1);
   }
 
   /** 已走过的格子数，用于结算展示「探索度」。 */
