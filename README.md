@@ -117,6 +117,7 @@ node scripts/measure-feel.mjs      # 拖动手感测量（慢/快/长划笔 + �
 node scripts/measure-layout.mjs     # 横竖屏与旋转布局测量
 node scripts/measure-limits.mjs     # 极端尺寸、性能、切后台自动暂停
 node scripts/measure-features.mjs   # 星星收集与提示箭头
+node scripts/measure-audio.mjs      # 音频解锁与静默降级
 node scripts/verify-live.mjs       # 对线上 GitHub Pages 做等价验收
 ```
 
@@ -163,6 +164,7 @@ curl -X POST -H "Authorization: Bearer <token>" \
 | 提示箭头 | 入门档 10 秒后出现且指向相邻合法格；挑战档不出现 |
 | 离线可玩 | 断网后重新加载仍可进入 |
 | 暂停后继续 | 画笔与主循环均正常恢复（曾在此丢过输入挂载） |
+| 无音频设备 | 静默降级，玩法完全不受影响 |
 
 ## 已知平台限制（不是缺陷，是 iOS 的限制）
 
