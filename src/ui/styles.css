@@ -318,6 +318,41 @@ body {
   line-height: 1.6;
 }
 
+/* 形状选择器：一排按钮。
+   用 span 而非 label（label 的 for 无处可指）；
+   与 .field label 同样走 grid 第一列，保证和上面的滑块标题左对齐。 */
+.field-wide .field-label {
+  font-size: clamp(14px, 2vw, 17px);
+}
+.shape-group {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.shape-btn {
+  flex: 1 1 0;
+  min-width: 62px;
+  min-height: 48px;
+  padding: 0 10px;
+  font-size: clamp(13px, 1.8vw, 16px);
+  font-family: inherit;
+  color: var(--fg);
+  background: var(--bg);
+  border: 2px solid rgba(255, 255, 255, 0.14);
+  border-radius: 12px;
+  cursor: pointer;
+  /* 平板上手指/笔点按不要有 300ms 延迟与高亮块 */
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+.shape-btn[aria-pressed='true'] {
+  color: #10203a;
+  background: var(--accent);
+  border-color: var(--accent);
+  font-weight: 600;
+}
+
 /* 开关：做成大尺寸，方便家长操作，也避免误触 */
 .switch {
   grid-column: 1 / -1;

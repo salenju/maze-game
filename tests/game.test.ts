@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { Game } from '../src/game/game';
-import { canMove, hasWall, type Dir, DX, DY, type Maze } from '../src/core/maze';
+import { canMove, hasWall, inMaze, junctionCount, type Dir, DX, DY, type Maze } from '../src/core/maze';
 import { clampCustom, PRESETS, presetById, type Difficulty } from '../src/core/difficulty';
 import { formatTime, describeDifficulty } from '../src/ui/screens';
 
@@ -9,8 +9,12 @@ const diff: Difficulty = {
   id: 'test',
   name: '测试',
   ageHint: '',
+  // 这台夹具刻意保持 square：下面大量断言（起点左上、出口右下、解路径）
+  // 是按方形迷宫写的。形状相关的行为在文件末尾单独一组测试里覆盖。
+  shape: 'square',
   cols: 10,
   rows: 10,
+  branchiness: 0.5,
   braid: 0.2,
   footprint: 'always',
   footprintFadeSec: 6,
@@ -544,5 +548,116 @@ describe('UI 工具函数', () => {
   it('describeDifficulty 对自定义难度也不崩溃', () => {
     const custom = clampCustom({ cols: 6, rows: 24, braid: 0, stars: 8 });
     expect(() => describeDifficulty(custom)).not.toThrow();
+  });
+});
+
+describe('游戏：形状迷宫（新增圆形等形状）', () => {
+  const shapeDiff = (shape: Difficulty['shape'], cols = 12, rows = 12): Difficulty => ({
+    ...diff,
+    shape,
+    cols,
+    rows,
+  });
+
+  it('每种形状都能开局，起点合法、玩家落在起点上', () => {
+    for (const shape of ['circle', 'hexagon', 'triangle', 'star', 'square'] as const) {
+      const game = new Game(shapeDiff(shape), 2024);
+      expect(inMaze(game.maze, game.maze.start.x, game.maze.start.y)).toBe(true);
+      expect(game.playerCell).toEqual(game.maze.start);
+    }
+  });
+
+  it('每种形状都能沿解路径通关（形状不会让迷宫走不通）', () => {
+    for (const shape of ['circle', 'hexagon', 'triangle', 'star', 'square'] as const) {
+      const game = new Game(shapeDiff(shape), 4242);
+      expect(walkSolution(game)).toBe(true);
+      expect(game.phaseNow).toBe('won');
+    }
+  });
+
+  it('指针落在形状之外的死区时，会吸附到最近的合法格而不是卡住', () => {
+    // 圆形的四个角落在 mask 之外。孩子把笔划到角上时必须仍然能动，
+    // 否则表现为「划了半天球不动」。
+    const game = new Game(shapeDiff('circle', 12, 12), 777);
+    game.beginPointer(-3, -3); // 左上角外侧
+    game.dragTo(-3, -3);
+    run(game, 1.0);
+    // 不能抛异常，且目标格决不会停在掩码之外
+    expect(inMaze(game.maze, game.playerCell.x, game.playerCell.y)).toBe(true);
+  });
+
+  it('整局游戏里小球永远不会出现在掩码之外（形状即边界）', () => {
+    for (const shape of ['circle', 'hexagon', 'triangle', 'star'] as const) {
+      const game = new Game(shapeDiff(shape, 14, 14), 31337);
+      const path = game.solution;
+      game.dragTo(path[0]!.x, path[0]!.y);
+      for (let i = 1; i < path.length; i++) {
+        const cell = path[i]!;
+        game.dragTo(cell.x, cell.y);
+        for (let f = 0; f < 10; f++) {
+          game.update(1 / 60);
+          const cur = game.playerCell;
+          expect(inMaze(game.maze, cur.x, cur.y)).toBe(true);
+        }
+      }
+    }
+  });
+
+  it('把笔尖按在出口上不动，形状迷宫也不能自动通关（额度按解路径夹紧）', () => {
+    for (const shape of ['circle', 'hexagon', 'triangle', 'star'] as const) {
+      let won = false;
+      const game = new Game(shapeDiff(shape, 8, 8), 2024, {
+        onWin: () => {
+          won = true;
+        },
+      });
+      const exit = game.maze.exit;
+      game.dragTo(exit.x, exit.y);
+      run(game, 60);
+      expect(won).toBe(false);
+      expect(game.phaseNow).toBe('playing');
+    }
+  });
+
+  it('圆形迷宫的提示箭头依然指向相邻且真实可走的一格', () => {
+    const game = new Game(shapeDiff('circle', 14, 14), 909);
+    for (let i = 0; i < 400; i++) {
+      game.update(1 / 60);
+      const next = game.hintNextStep();
+      if (next === null) continue;
+      const cur = game.playerCell;
+      expect(Math.abs(next.x - cur.x) + Math.abs(next.y - cur.y)).toBe(1);
+      const dx = next.x - cur.x;
+      const dy = next.y - cur.y;
+      const dir = (dx > 0 ? 1 : dx < 0 ? 3 : dy > 0 ? 2 : 0) as Dir;
+      expect(hasWall(game.maze, cur.x, cur.y, dir)).toBe(false);
+    }
+  });
+
+  it('星星只落在形状内部的必经之路上', () => {
+    const game = new Game({ ...shapeDiff('circle', 14, 14), stars: 4 }, 555);
+    for (const star of game.starCells) {
+      expect(inMaze(game.maze, star.x, star.y)).toBe(true);
+    }
+  });
+});
+
+describe('游戏：岔路更多（难度提升的回归保护）', () => {
+  it('相同尺寸与 braid 下，提高 branchiness 会明显增加岔路', () => {
+    const mk = (branchiness: number) => ({
+      ...diff,
+      shape: 'square' as const,
+      cols: 16,
+      rows: 16,
+      braid: 0,
+      branchiness,
+    });
+    let few = 0;
+    let many = 0;
+    for (let s = 0; s < 20; s++) {
+      few += junctionCount(new Game(mk(0), s * 31 + 5).maze);
+      many += junctionCount(new Game(mk(0.85), s * 31 + 5).maze);
+    }
+    expect(many).toBeGreaterThan(few * 1.8);
   });
 });

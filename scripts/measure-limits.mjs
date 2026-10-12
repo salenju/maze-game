@@ -48,16 +48,15 @@ async function startCustom(page, { cols, rows, stars, braid }) {
   await page.locator('.diff-item').nth(4).click(); // 自定义
   await page.waitForTimeout(250);
 
-  const s = page.locator('#custom-panel input[type=range]');
-  // range 顺序：0=宽度 1=高度 2=环路 3=脚印消失时间 4=星星数量
-  // （「走过的路」是 select，「计时」「提示箭头」是 checkbox，都不计入 range）
-  await s.nth(0).fill(String(cols));
+  // 按 data-field 定位而不是按位置：新增滑块不会让脚本改错控件
+  const field = (name) => page.locator(`#custom-panel input[data-field="${name}"]`);
+  await field('cols').fill(String(cols));
   await page.waitForTimeout(150);
-  await s.nth(1).fill(String(rows));
+  await field('rows').fill(String(rows));
   await page.waitForTimeout(150);
-  await s.nth(2).fill(String(braid));
+  await field('braid').fill(String(braid));
   await page.waitForTimeout(150);
-  await s.nth(4).fill(String(stars));
+  await field('stars').fill(String(stars));
   await page.waitForTimeout(200);
 
   await page.click('#btn-start');

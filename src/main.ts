@@ -9,6 +9,7 @@
 import './ui/styles.css';
 
 import { loadCustom, PRESETS, saveCustom, type Difficulty } from './core/difficulty';
+import { deadEndCount, junctionCount, mazeCellCount } from './core/maze';
 import { PointerInput, lockViewport, type PointerSample } from './game/input';
 import { Game, type WinResult } from './game/game';
 import { Renderer } from './game/renderer';
@@ -23,6 +24,7 @@ import {
   type Progress,
 } from './game/storage';
 import {
+  describeSize,
   detectPlatform,
   formatTime,
   must,
@@ -340,7 +342,9 @@ class App {
       onWin: (result) => this.handleWin(result),
     });
 
-    must('#hud-diff').textContent = `${difficulty.name}　${difficulty.cols}×${difficulty.rows}`;
+    // HUD 上把形状也写出来：孩子玩到一半被家长换过形状时，
+    // 一行「圆形 7×7」比只有尺寸更能说明这一局是什么。
+    must('#hud-diff').textContent = `${difficulty.name}　${describeSize(difficulty)}`;
     must('#hud-time').textContent = difficulty.timed ? '0:00' : '--:--';
     must('#hud-stars').textContent = this.starsLabel();
 
@@ -471,8 +475,8 @@ class App {
     // 只记录落点，不授予前进额度：
     // 这样「轻点一下」不会让小球自己走过去，移动必须由笔尖移动驱动。
     const cell = this.renderer.toCellCoords(sample.x, sample.y);
-    this.targetCell = { x: Math.floor(cell.x), y: Math.floor(cell.y) };
     this.game?.beginPointer(cell.x, cell.y);
+    this.targetCell = this.game?.pointerTargetCell ?? null;
   }
 
   private onPointerMove(samples: PointerSample[]): void {
@@ -501,8 +505,9 @@ class App {
   private applyPointer(sample: PointerSample): void {
     if (!this.game) return;
     const cell = this.renderer.toCellCoords(sample.x, sample.y);
-    this.targetCell = { x: Math.floor(cell.x), y: Math.floor(cell.y) };
     this.game.dragTo(cell.x, cell.y);
+    // 落点方框用游戏吸附后的格子：形状迷宫里原始坐标可能落在图形之外
+    this.targetCell = this.game.pointerTargetCell;
   }
 
   private relayout(): void {
@@ -555,6 +560,13 @@ class App {
   debugMazeInfo(): {
     cols: number;
     rows: number;
+    shape: string;
+    /** 属于迷宫的格子数（形状 mask 之外的格不计入） */
+    mazeCells: number;
+    /** 岔路口数量（三个及以上出口的格子），用来实测难度提升 */
+    junctions: number;
+    /** 死胡同数量 */
+    deadEnds: number;
     footprints: number;
     /** 本局星星总数（固定值，不随收集变化） */
     starsTotal: number;
@@ -566,6 +578,11 @@ class App {
     return {
       cols: g?.maze.cols ?? 0,
       rows: g?.maze.rows ?? 0,
+      // 形状与岔路是本次新增的能力，验收脚本要能实测它们真的生效
+      shape: g?.maze.shape ?? 'square',
+      mazeCells: g ? mazeCellCount(g.maze) : 0,
+      junctions: g ? junctionCount(g.maze) : 0,
+      deadEnds: g ? deadEndCount(g.maze) : 0,
       footprints: g?.footprintList().length ?? 0,
       // 刻意区分总数与已收集数：早先只暴露一个含糊的 stars 字段，
       // 验收脚本把它当成「剩余」来断言，导致明明吃到星星却判为失败。

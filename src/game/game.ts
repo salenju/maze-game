@@ -15,6 +15,7 @@ import {
   canMove,
   cellIndex,
   generateMaze,
+  inMaze,
   placeCollectibles,
   solve,
   type Cell,
@@ -34,13 +35,23 @@ const ARRIVE_EPSILON = 0.02;
  * 路径只在小球真正移动笔尖时重算，且每次重算只放行有限格数，
  * 因此「把笔尖按在出口上不动」最多前进这么多格就必然停住 —— 无法自动通关。
  *
- * 安全性有硬下界保证：任意迷宫中起终点的曼哈顿距离至少为 (cols-1)+(rows-1)，
- * 最小配置 6×6 也有 10 格，远大于本值；最大配置 24×24 更是 46 格。
- *
  * 手感上的权衡：取 5 格（约 0.77 秒滑行）足以覆盖孩子连续划一笔的推进量，
  * 不会出现走走停停；同时远小于任何迷宫的完整解答长度。
  */
 const MOVE_BURST_CELLS = 5;
+
+/**
+ * 单次补额度相对本局解路径步数的安全比例。
+ *
+ * 为什么需要它：方形迷宫靠「解路径步数 ≥ (cols-1)+(rows-1) ≥ 10」论证
+ * MOVE_BURST_CELLS=5 一定安全，但**形状迷宫不成立** ——
+ * 6×6 星形的图上直径只有 7 步，5 格额度已经是它的 71%，
+ * 万一 `dragTo` 的额度在某个边界路径上多补一次，就会逼近甚至走完。
+ *
+ * 因此把额度再夹一次：`budget = min(5, ceil(步数 * 0.5))`。
+ * 任何迷宫下额度都严格小于一半路程，且至少 1 格，手感不受影响。
+ */
+const MOVE_BURST_RATIO = 0.5;
 
 export type Phase = 'playing' | 'paused' | 'won';
 
@@ -94,6 +105,11 @@ export class Game {
   private pointerCell: Cell | null = null;
   /** 本轮剩余可前进格数；笔尖每次进入新格子都会重置 */
   private moveBudget = 0;
+  /**
+   * 本局单次补额度的上限。
+   * 形状迷宫的解答可能很短，因此按解路径步数夹紧，见 MOVE_BURST_RATIO。
+   */
+  private readonly burstCells: number;
   /** 本次按下期间笔尖是否真的移动过（用于区分「拖动」与「轻点」） */
   private pointerMoved = false;
   private readonly footprints: Footprint[] = [];
@@ -107,12 +123,19 @@ export class Game {
 
     // 同一个 rng 依次生成迷宫与收集物 → (难度, 种子) 完全可复现
     this.maze = generateMaze(
-      { cols: difficulty.cols, rows: difficulty.rows, braid: difficulty.braid },
+      {
+        cols: difficulty.cols,
+        rows: difficulty.rows,
+        braid: difficulty.braid,
+        shape: difficulty.shape,
+        branchiness: difficulty.branchiness,
+      },
       this.rng,
     );
     this.starCells = placeCollectibles(this.maze, difficulty.stars);
     this.starTaken = this.starCells.map(() => false);
     this.solution = solve(this.maze);
+    this.burstCells = burstCellsFor(this.solution.length);
 
     this.px = this.maze.start.x;
     this.py = this.maze.start.y;
@@ -151,6 +174,16 @@ export class Game {
     return { x: Math.round(this.px), y: Math.round(this.py) };
   }
 
+  /**
+   * 笔尖当前所在格（已吸附到形状内的合法格），供渲染层画落点方框。
+   *
+   * 必须用这个而不是拿原始屏幕坐标自己 floor：形状迷宫的指针可能落在
+   * 掩码之外，直接换算会在迷宫外面画出一个孤零零的方框。
+   */
+  get pointerTargetCell(): Cell | null {
+    return this.pointerCell;
+  }
+
   /** 该星星是否已被吃掉。 */
   isStarTaken(i: number): boolean {
     return this.starTaken[i] === true;
@@ -179,10 +212,7 @@ export class Game {
   beginPointer(cellX: number, cellY: number): void {
     if (this.phase !== 'playing') return;
 
-    this.pointerCell = {
-      x: clamp(Math.floor(cellX), 0, this.maze.cols - 1),
-      y: clamp(Math.floor(cellY), 0, this.maze.rows - 1),
-    };
+    this.pointerCell = this.snapToMaze(cellX, cellY);
     this.pointerMoved = false;
     this.targetCell = null;
     this.path = [];
@@ -199,8 +229,9 @@ export class Game {
   dragTo(cellX: number, cellY: number): void {
     if (this.phase !== 'playing') return;
 
-    const tx = clamp(Math.floor(cellX), 0, this.maze.cols - 1);
-    const ty = clamp(Math.floor(cellY), 0, this.maze.rows - 1);
+    const snapped = this.snapToMaze(cellX, cellY);
+    const tx = snapped.x;
+    const ty = snapped.y;
 
     const sameCell =
       this.pointerCell !== null && this.pointerCell.x === tx && this.pointerCell.y === ty;
@@ -209,7 +240,7 @@ export class Game {
     this.pointerCell = { x: tx, y: ty };
     this.pointerMoved = true;
     // 笔尖进入新格子：补充前进额度，并重算到该格的路径
-    this.moveBudget = MOVE_BURST_CELLS;
+    this.moveBudget = this.burstCells;
 
     const from = this.playerCell;
     this.targetCell = { x: tx, y: ty };
@@ -334,6 +365,40 @@ export class Game {
     return Math.abs(axr - bx) + Math.abs(ayr - by) === 1;
   }
 
+  /**
+   * 把指针所在的浮点格坐标吸附到最近的合法迷宫格。
+   *
+   * 形状迷宫（圆/六边形/三角/星）有一大片「外接矩形内、图形外」的死区。
+   * 如果只按外接矩形夹紧，孩子在圆形四角划笔时，目标格会跑到图形外的角上：
+   * 那里四面皆墙、不可达，BFS 直接返回空路径 —— 表现为「划了半天球不动」。
+   *
+   * 因此：不在 mask 内时，改成找最近的 mask 内格子。
+   * 效果上等同于「笔尖贴着墙走」，与方形迷宫撞墙绕行的手感一致。
+   */
+  private snapToMaze(cellX: number, cellY: number): Cell {
+    const maze = this.maze;
+    const bx = clamp(Math.floor(cellX), 0, maze.cols - 1);
+    const by = clamp(Math.floor(cellY), 0, maze.rows - 1);
+    if (inMaze(maze, bx, by)) return { x: bx, y: by };
+
+    let bestX = bx;
+    let bestY = by;
+    let bestDist = Number.POSITIVE_INFINITY;
+    for (let y = 0; y < maze.rows; y++) {
+      for (let x = 0; x < maze.cols; x++) {
+        if (!inMaze(maze, x, y)) continue;
+        // 用平方距离，避免开方；并列时取更靠左上的格子，保证结果稳定
+        const d = (x - bx) * (x - bx) + (y - by) * (y - by);
+        if (d < bestDist || (d === bestDist && x + y < bestX + bestY)) {
+          bestDist = d;
+          bestX = x;
+          bestY = y;
+        }
+      }
+    }
+    return { x: bestX, y: bestY };
+  }
+
   private atCell(cell: Cell): boolean {
     return Math.abs(this.px - cell.x) < 0.12 && Math.abs(this.py - cell.y) < 0.12;
   }
@@ -406,4 +471,18 @@ export class Game {
 
 function clamp(v: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, v));
+}
+
+/**
+ * 单次补额度：常规取 MOVE_BURST_CELLS，但绝不超过本局解路径步数的一半。
+ *
+ * 这是形状迷宫带来的新要求。方形迷宫可以靠「起终点曼哈顿距离 ≥ 10」证明
+ * MOVE_BURST_CELLS=5 永远安全，但形状迷宫的图上直径可能只有 7 步
+ * （实测 6×6 星形），5 格额度就太大了。
+ * 夹到一半以后，任何迷宫下「按住不动」最多走到路程的一半，绝不可能通关。
+ * 下限取 1：再短的迷宫也保证孩子拖一下能动，不会变成完全不走。
+ */
+function burstCellsFor(solutionLength: number): number {
+  const steps = Math.max(1, solutionLength - 1);
+  return Math.max(1, Math.min(MOVE_BURST_CELLS, Math.ceil(steps * MOVE_BURST_RATIO)));
 }

@@ -8,7 +8,7 @@
  *     换来的是零状态同步 bug —— 儿童应用最怕画面与实际状态不一致。
  */
 
-import { N, E, S, W, type Cell, type Dir, type Maze } from '../core/maze';
+import { N, E, S, W, inMaze, type Cell, type Dir, type Maze } from '../core/maze';
 import { type FootprintMode } from '../core/difficulty';
 import { type Footprint, type Game } from './game';
 
@@ -126,9 +126,9 @@ export class Renderer {
     const ox = this.originX;
     const oy = this.originY;
 
-    // 地板
-    ctx.fillStyle = COLORS.floor;
-    ctx.fillRect(ox, oy, c * maze.cols, c * maze.rows);
+    // 地板：逐格画，形状之外留空（露出背景色），轮廓才是形状本身。
+    // 早先是整块 fillRect，圆形迷宫会露出一块方形地板，形状感全没了。
+    this.drawFloor(maze, c, ox, oy);
 
     if (opts.highlightCorridors) this.drawCorridors(maze, c, ox, oy);
     this.drawFootprints(game, opts, c, ox, oy);
@@ -138,6 +138,26 @@ export class Renderer {
     if (game.showHint) this.drawHint(game, c, ox, oy);
     this.drawWalls(maze, c, ox, oy);
     this.drawPlayer(game, c, ox, oy);
+  }
+
+  /**
+   * 地板：只画属于迷宫的格子。
+   *
+   * 形状迷宫必须逐格画 —— 整块矩形会让圆形看起来还是方的。
+   * 为了不让格子边缘出现「细细的网格缝」，每格向外多画 0.5px 让相邻格重叠。
+   */
+  private drawFloor(maze: Maze, c: number, ox: number, oy: number): void {
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.fillStyle = COLORS.floor;
+    const bleed = 0.5;
+    for (let y = 0; y < maze.rows; y++) {
+      for (let x = 0; x < maze.cols; x++) {
+        if (!inMaze(maze, x, y)) continue;
+        ctx.fillRect(ox + x * c - bleed, oy + y * c - bleed, c + bleed * 2, c + bleed * 2);
+      }
+    }
+    ctx.restore();
   }
 
   /** 辅助模式：把可通行的格子连成走廊，帮助低龄孩子建立「路」的概念。 */
@@ -157,7 +177,7 @@ export class Renderer {
           const dy = dir === S ? 1 : 0;
           const nx = x + dx;
           const ny = y + dy;
-          if (nx >= maze.cols || ny >= maze.rows) continue;
+          if (!inMaze(maze, nx, ny)) continue;
           if (this.hasWall(maze, x, y, dir)) continue;
           ctx.moveTo(cx, cy);
           ctx.lineTo(cx + dx * c, cy + dy * c);
@@ -312,6 +332,9 @@ export class Renderer {
     ctx.beginPath();
     for (let y = 0; y < maze.rows; y++) {
       for (let x = 0; x < maze.cols; x++) {
+        // 形状之外的格子不画墙：它们本来就不属于迷宫，
+        // 画出来会在圆形/星形外面多出一圈「外接矩形」的轮廓。
+        if (!inMaze(maze, x, y)) continue;
         const px = ox + x * c;
         const py = oy + y * c;
 

@@ -6,6 +6,7 @@
  */
 
 import { clampCustom, LIMITS, PRESETS, type Difficulty, type FootprintMode } from '../core/difficulty';
+import { SHAPE_HINTS, SHAPE_IDS, SHAPE_LABELS, type ShapeId } from '../core/shape';
 import { type Prefs, type Progress } from '../game/storage';
 
 export type ScreenName =
@@ -91,8 +92,7 @@ export function renderDifficultyList(
     button.setAttribute('aria-pressed', diff.id === selectedId ? 'true' : 'false');
 
     const h3 = document.createElement('h3');
-    h3.textContent =
-      diff.id === 'custom' ? diff.name : `${diff.name}　${diff.cols}×${diff.rows}`;
+    h3.textContent = diff.id === 'custom' ? diff.name : `${diff.name}　${describeSize(diff)}`;
 
     const p = document.createElement('p');
     p.textContent = diff.ageHint;
@@ -124,7 +124,7 @@ export function updateCustomSummary(container: HTMLElement, custom: Difficulty):
   if (!item) return;
 
   const h3 = item.querySelector('h3');
-  if (h3) h3.textContent = `${custom.name}　${custom.cols}×${custom.rows}`;
+  if (h3) h3.textContent = `${custom.name}　${describeSize(custom)}`;
 
   const tags = item.querySelector('.diff-tags');
   if (!tags) return;
@@ -137,10 +137,17 @@ export function updateCustomSummary(container: HTMLElement, custom: Difficulty):
   }
 }
 
+/** 列表标题里的尺寸摘要，形状也一并显示，家长一眼能看出这张图长什么样。 */
+export function describeSize(diff: Difficulty): string {
+  const shape = SHAPE_LABELS[diff.shape] ?? SHAPE_LABELS.square;
+  return `${shape} ${diff.cols}×${diff.rows}`;
+}
+
 /** 把难度翻译成孩子/家长能一眼看懂的标签。 */
 export function describeDifficulty(diff: Difficulty): string[] {
   const tags: string[] = [];
-  tags.push(`迷宫 ${diff.cols}×${diff.rows}`);
+  tags.push(`${SHAPE_LABELS[diff.shape] ?? SHAPE_LABELS.square}迷宫`);
+  tags.push(`${diff.cols}×${diff.rows}`);
   tags.push(diff.timed ? '有计时' : '不计时');
 
   const fp: Record<FootprintMode, string> = {
@@ -152,7 +159,14 @@ export function describeDifficulty(diff: Difficulty): string[] {
 
   if (diff.stars > 0) tags.push(`${diff.stars} 颗星星`);
   if (diff.hintDelayMs !== null) tags.push('卡住会提示');
-  // braid 越大越简单，但不必向家长暴露这个术语，用日常语言描述
+
+  // 两个参数方向相反，标签分开描述，绝不合成一个「难度」，
+  // 否则家长根本分不清该调哪个。
+  // 岔路：越大越难（决策点多）
+  if (diff.branchiness >= 0.7) tags.push('岔路很多');
+  else if (diff.branchiness >= 0.4) tags.push('岔路较多');
+  else tags.push('岔路较少');
+  // 环路：越大越简单（死路少），不必向家长暴露术语，用日常语言描述
   if (diff.braid >= 0.5) tags.push('死路少');
   else if (diff.braid >= 0.2) tags.push('死路适中');
   else tags.push('死路多');
@@ -189,7 +203,13 @@ export function renderCustomPanel(
   };
 
   container.append(
+    shapeField({
+      value: snapshot.shape,
+      hint: '换个形状换的是空间感，尺寸和难度都不变。',
+      onInput: (v) => emit({ shape: v }),
+    }),
     sliderField({
+      key: 'cols',
       label: '迷宫宽度',
       min: LIMITS.minCols,
       max: LIMITS.maxCols,
@@ -200,6 +220,7 @@ export function renderCustomPanel(
       onInput: (v) => emit({ cols: v }),
     }),
     sliderField({
+      key: 'rows',
       label: '迷宫高度',
       min: LIMITS.minRows,
       max: LIMITS.maxRows,
@@ -210,6 +231,19 @@ export function renderCustomPanel(
       onInput: (v) => emit({ rows: v }),
     }),
     sliderField({
+      key: 'branchiness',
+      label: '岔路数量',
+      min: 0,
+      max: 100,
+      step: 5,
+      value: Math.round(snapshot.branchiness * 100),
+      display: (v) => (v <= 0 ? '0（一条路走到底）' : v >= 85 ? `${v}（到处是岔路）` : `${v}`),
+      // 与下面「环路数量」方向完全相反，必须分别写清楚，否则家长一定调反
+      hint: '数值越大越难：岔路多、要做的选择多。想让孩子轻松点就往左调。',
+      onInput: (v) => emit({ branchiness: v / 100 }),
+    }),
+    sliderField({
+      key: 'braid',
       label: '环路数量',
       min: 0,
       max: 100,
@@ -231,6 +265,7 @@ export function renderCustomPanel(
       onInput: (v) => emit({ footprint: v as FootprintMode }),
     }),
     sliderField({
+      key: 'footprintFadeSec',
       label: '脚印消失时间',
       min: 2,
       max: 20,
@@ -247,6 +282,7 @@ export function renderCustomPanel(
       onInput: (v) => emit({ timed: v }),
     }),
     sliderField({
+      key: 'stars',
       label: '星星数量',
       min: LIMITS.minStars,
       max: LIMITS.maxStars,
@@ -267,6 +303,14 @@ export function renderCustomPanel(
 
 interface SliderFieldOptions {
   label: string;
+  /**
+   * 稳定的字段名，渲染成 data-field。
+   *
+   * 自动化验收脚本以前用 `input[type=range]` 的**位置**来取滑块
+   * （nth(0)=宽度、nth(1)=高度…）。本次新增「岔路数量」滑块后位置全部后移，
+   * 脚本会静默地改错控件。用名字定位后，以后再加滑块也不会误伤。
+   */
+  key: string;
   min: number;
   max: number;
   step: number;
@@ -279,6 +323,7 @@ interface SliderFieldOptions {
 function sliderField(opts: SliderFieldOptions): HTMLElement {
   const field = document.createElement('div');
   field.className = 'field';
+  field.dataset['field'] = opts.key;
 
   const id = `f-${Math.random().toString(36).slice(2, 9)}`;
   const label = document.createElement('label');
@@ -291,6 +336,7 @@ function sliderField(opts: SliderFieldOptions): HTMLElement {
   const input = document.createElement('input');
   input.type = 'range';
   input.id = id;
+  input.dataset['field'] = opts.key;
   input.min = String(opts.min);
   input.max = String(opts.max);
   input.step = String(opts.step);
@@ -307,6 +353,60 @@ function sliderField(opts: SliderFieldOptions): HTMLElement {
   hint.textContent = opts.hint;
 
   field.append(label, output, input, hint);
+  return field;
+}
+
+interface ShapeFieldOptions {
+  value: ShapeId;
+  hint: string;
+  onInput: (v: ShapeId) => void;
+}
+
+/**
+ * 形状选择器。
+ *
+ * 用一排可点的按钮而不是 <select>：形状是「看得见」的东西，
+ * 平板上点一下就能立刻在下面的难度卡片上看到文字变化，
+ * 比下拉菜单直观得多；而且 5 个按钮一排刚好放得下。
+ */
+function shapeField(opts: ShapeFieldOptions): HTMLElement {
+  const field = document.createElement('div');
+  field.className = 'field field-wide';
+  field.dataset['field'] = 'shape';
+
+  const label = document.createElement('span');
+  label.className = 'field-label';
+  label.textContent = '迷宫形状';
+
+  const group = document.createElement('div');
+  group.className = 'shape-group';
+  group.setAttribute('role', 'group');
+  group.setAttribute('aria-label', '迷宫形状');
+
+  const hint = document.createElement('p');
+  hint.className = 'field-hint';
+  const hintText = (id: ShapeId) => `${opts.hint}${SHAPE_HINTS[id]}`;
+  hint.textContent = hintText(opts.value);
+
+  for (const id of SHAPE_IDS) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'shape-btn';
+    button.dataset['shape'] = id;
+    button.setAttribute('aria-pressed', id === opts.value ? 'true' : 'false');
+    button.textContent = SHAPE_LABELS[id];
+    button.addEventListener('click', () => {
+      // 只切高亮、只改说明文字，不重建面板：重建会丢掉滚动位置，也会打断后续操作
+      for (const other of group.querySelectorAll('.shape-btn')) {
+        other.setAttribute('aria-pressed', other === button ? 'true' : 'false');
+      }
+      hint.textContent = hintText(id);
+      opts.onInput(id);
+    });
+    group.append(button);
+  }
+
+  field.append(label, group, hint);
   return field;
 }
 

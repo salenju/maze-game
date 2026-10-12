@@ -67,7 +67,10 @@ await page.waitForTimeout(500);
 await page.locator('.diff-item').nth(4).click();
 await page.waitForTimeout(300);
 
-const slider = page.locator('#custom-panel input[type=range]').first();
+// 按 data-field 定位：以前用 first()/nth() 依赖滑块顺序，
+// 新增「岔路数量」后顺序变了，位置定位会静默地改错控件。
+const widths = () => page.locator('#custom-panel input[data-field="cols"]');
+const slider = widths();
 const box = await slider.boundingBox();
 check('找到宽度滑块', !!box, box ? `${Math.round(box.width)}x${Math.round(box.height)}` : 'none');
 
@@ -88,7 +91,7 @@ for (let i = 1; i <= steps; i++) {
 await page.mouse.up();
 await page.waitForTimeout(300);
 
-const after = await page.locator('#custom-panel input[type=range]').first().inputValue();
+const after = await widths().inputValue();
 const delta = Number(after) - Number(before);
 check(
   '拖动滑块能连续改变数值（不会被重建打断）',
@@ -97,17 +100,17 @@ check(
 );
 
 // 滑块必须仍然是同一个「活着」的元素，并且还能继续操作
-const stillWorks = await page.locator('#custom-panel input[type=range]').first().isVisible();
+const stillWorks = await widths().isVisible();
 check('拖动后滑块仍可交互', stillWorks);
 
 // 用键盘再验证一次：能连续响应说明元素没有被反复替换掉焦点
-const afterDrag = await page.locator('#custom-panel input[type=range]').first().inputValue();
-await page.locator('#custom-panel input[type=range]').first().focus();
+const afterDrag = await widths().inputValue();
+await widths().focus();
 for (let i = 0; i < 3; i++) {
   await page.keyboard.press('ArrowRight');
   await page.waitForTimeout(60);
 }
-const afterKeys = await page.locator('#custom-panel input[type=range]').first().inputValue();
+const afterKeys = await widths().inputValue();
 check(
   '滑块能用方向键连续调整',
   Number(afterKeys) > Number(afterDrag),
@@ -141,12 +144,12 @@ await page.waitForTimeout(450);
 await page.locator('.diff-item').nth(4).click();
 await page.waitForTimeout(300);
 
-const s = page.locator('#custom-panel input[type=range]');
-await s.nth(0).fill('20');
+const field = (name) => page.locator(`#custom-panel input[data-field="${name}"]`);
+await field('cols').fill('20');
 await page.waitForTimeout(220);
-await s.nth(1).fill('22');
+await field('rows').fill('22');
 await page.waitForTimeout(220);
-await s.nth(2).fill('70');
+await field('braid').fill('70');
 await page.waitForTimeout(220);
 
 const persisted = await page.evaluate(() => JSON.parse(localStorage.getItem('maze.custom.v1')));
@@ -158,7 +161,7 @@ check(
 check('环路滑块改动也已保存', Math.abs(persisted.braid - 0.7) < 0.001, `braid=${persisted.braid}`);
 
 // 界面上的滑块位置也要与持久化值一致，否则家长看到的是错的值
-const uiCols = await s.nth(0).inputValue();
+const uiCols = await field('cols').inputValue();
 check('界面滑块位置与已保存值一致', Number(uiCols) === persisted.cols,
   `界面 cols=${uiCols}，存储 cols=${persisted.cols}`);
 
