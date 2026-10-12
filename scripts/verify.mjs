@@ -124,6 +124,23 @@ async function runChromium(browser) {
   check('首页标题正确渲染', title?.includes('迷宫大冒险'), title ?? '');
   await page.screenshot({ path: 'artifacts/01-home.png' });
 
+  /*
+   * 首页版本号。
+   *
+   * 必须与 package.json 逐字比对：只断言「有个 v 开头的字符串」是不够的 ——
+   * 那样即使版本号被写死成常量、或注入读到旧值，检查也照样通过。
+   */
+  const expectedVersion = JSON.parse(
+    await readFile(new URL('../package.json', import.meta.url), 'utf-8'),
+  ).version;
+  const versionText = (await page.textContent('#app-version'))?.trim() ?? '';
+  check('首页显示版本号且与 package.json 一致', versionText === `v${expectedVersion}`,
+    `显示「${versionText}」，期望「v${expectedVersion}」`);
+  check('版本号在首页真实可见（未被隐藏或裁掉）', await page.isVisible('#app-version'));
+  const versionInjected = await page.evaluate(() => window.__mazeDebug?.version?.() ?? null);
+  check('构建注入的版本号与 package.json 一致', versionInjected === expectedVersion,
+    `注入「${versionInjected}」`);
+
   // --- PWA 清单与 Service Worker ---
   const manifest = await page.evaluate(async () => {
     const res = await fetch('/maze-game/manifest.webmanifest');
@@ -441,6 +458,10 @@ async function runFullClear(browser) {
 
     const homeStats = await page.textContent('#home-stats');
     check('首页显示通关战绩', !!homeStats && homeStats.includes('走出迷宫'), (homeStats ?? '').trim().slice(0, 40));
+    // 通关后回到首页也要看到版本号：showHome() 每次都会重写它，
+    // 否则徽标只在首次加载时出现，玩一局回来就没了。
+    const versionAfterPlay = (await page.textContent('#app-version'))?.trim() ?? '';
+    check('玩过一局回首页后版本号仍在', versionAfterPlay.startsWith('v'), versionAfterPlay);
     await page.screenshot({ path: 'artifacts/12-home-with-stats.png' });
   }
 

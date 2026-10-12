@@ -26,6 +26,20 @@ await page.goto(URL_, { waitUntil: 'networkidle' });
 check('线上首页可打开', await page.isVisible('.title'));
 check('无失败资源请求', failed.length === 0, failed.slice(0,3).join(' | '));
 
+/*
+ * 版本号：这是本脚本最有价值的一条断言。
+ *
+ * 线上「看起来正常」但其实是 Service Worker 缓存的旧版本，是最容易误判的情况 ——
+ * 页面渲染成功、标题也对，唯独跑的是几天前的代码。
+ * 所以这里不接受「有个版本徽标」这种弱断言，而是把线上实际跑的版本号打印出来：
+ * 发布后徽标若还停在旧号，一眼就能确认这次部署没生效。
+ */
+const liveVersion = (await page.textContent('#app-version'))?.trim() ?? '';
+check('线上首页显示版本号', /^v\d+\.\d+\.\d+/.test(liveVersion), liveVersion || '(空)');
+const liveInjected = await page.evaluate(() => window.__mazeDebug?.version?.() ?? null);
+check('线上构建注入的版本号可读取', typeof liveInjected === 'string' && liveInjected.length > 0,
+  String(liveInjected));
+
 // 关键：样式与脚本必须真的加载成功（base 配错会白屏但有 200）
 const styled = await page.evaluate(() => {
   const b = document.querySelector('#btn-play');

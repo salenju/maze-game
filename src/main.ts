@@ -37,6 +37,7 @@ import {
   Screens,
   updateCustomSummary,
 } from './ui/screens';
+import { appVersion, versionLabel } from './ui/version';
 
 /** 单帧最大推进时间（秒）。切后台回来的时间跳跃在此被截断。 */
 const MAX_DT = 1 / 20;
@@ -224,6 +225,8 @@ class App {
     this.stopLoop();
     this.game = null;
     renderHomeStats(must('#home-stats'), this.progress);
+    // 每次回首页都刷新一次版本徽标：SW 自动更新后无需重开页面就能看到新版本号
+    must('#app-version').textContent = versionLabel();
 
     // 第一次通关后回首页时再给安装引导：此刻家长通常就在旁边，引导才有人看
     if (this.pendingInstallGuide && this.maybeShowInstallGuide()) {
@@ -672,6 +675,16 @@ class App {
     return next ? { x: next.x, y: next.y } : null;
   }
 
+  /**
+   * 当前构建的版本号（自动化验收用）。
+   *
+   * 在线验收靠它做「线上跑的就是这次发布的版本」的硬断言 ——
+   * 只检查首页有没有徽标是不够的，旧的 Service Worker 缓存照样能渲染出徽标。
+   */
+  debugVersion(): string {
+    return appVersion();
+  }
+
   private frame(dt: number): void {
     const g = this.game;
     if (!g) return;
@@ -714,14 +727,16 @@ try {
     wallSignature: () => app.debugWallSignature(),
     hintVisible: () => app.debugHintVisible(),
     hintNext: () => app.debugHintNext(),
+    version: () => app.debugVersion(),
   };
 } catch (error) {
-  // 平板上没有控制台，把错误直接画到页面上，方便远程排查
+  // 平板上没有控制台，把错误直接画到页面上，方便远程排查。
+  // 这里也要带上版本号：报告「打不开」时，第一件要确认的就是装的是哪一版。
   const message = error instanceof Error ? error.message : String(error);
   document.body.innerHTML =
     `<div style="padding:24px;color:#e8eefc;font-family:system-ui;line-height:1.7">` +
     `<h2 style="color:#ffcf4d">启动失败</h2><p>${message}</p>` +
-    `<p style="color:#9fb0d0;font-size:14px">请刷新重试。</p></div>`;
+    `<p style="color:#9fb0d0;font-size:14px">${versionLabel()}　请刷新重试。</p></div>`;
 }
 
 export {};

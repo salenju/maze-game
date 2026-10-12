@@ -129,6 +129,27 @@ body {
   font-weight: 600;
 }
 
+/*
+ * 版本号徽标。
+ *
+ * 刻意做得比战绩更淡、更小，并和上方内容拉开一段距离：
+ * 它是给家长和排查问题的人看的，不该抢孩子的注意力。
+ * 用 tabular-nums 避免版本号里的数字宽度不一，换版本时徽标左右抖动。
+ */
+.version {
+  margin: 22px 0 0;
+  color: var(--fg-dim);
+  opacity: 0.62;
+  font-size: clamp(12px, 1.7vw, 14px);
+  letter-spacing: 0.04em;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 空文本时不占位：JS 尚未接管或注入失败时，避免首页多出一条空白 */
+.version:empty {
+  display: none;
+}
+
 /* ---------- 按钮 ---------- */
 
 .btn {

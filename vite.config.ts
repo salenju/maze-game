@@ -1,6 +1,8 @@
 import { defineConfig } from 'vite';
 import { VitePWA } from 'vite-plugin-pwa';
 
+import pkg from './package.json' with { type: 'json' };
+
 /**
  * GitHub Pages 项目站点部署在 https://<user>.github.io/<repo>/ 子路径下。
  * base 必须与仓库名一致，否则所有资源路径都会 404（表现为整页白屏）。
@@ -8,8 +10,21 @@ import { VitePWA } from 'vite-plugin-pwa';
 const REPO = 'maze-game';
 const BASE = `/${REPO}/`;
 
+/**
+ * 版本号在构建时从 package.json 读入并注入前端。
+ *
+ * 为什么必须注入而不是让前端运行时去 fetch：版本号要显示在首页上，
+ * 而首页恰恰是「离线打开旧版本」时最需要看到版本号的地方 ——
+ * 若运行时再去请求 package.json，离线时正好拿不到，徽标反而消失。
+ * 注入成常量后，版本号随 JS 一起被 Service Worker 预缓存，离线也准确。
+ */
+const APP_VERSION = pkg.version;
+
 export default defineConfig({
   base: BASE,
+  define: {
+    __APP_VERSION__: JSON.stringify(APP_VERSION),
+  },
   build: {
     target: 'es2020',
     // 平板上的 Puzzle 不需要 sourcemap，省流量也省缓存体积

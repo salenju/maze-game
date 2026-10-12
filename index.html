@@ -44,6 +44,12 @@
             <button class="btn btn-ghost" id="btn-howto">怎么玩</button>
           </div>
           <div class="stats" id="home-stats"></div>
+          <!--
+            版本号徽标。文本由 main.ts 从构建时注入的常量填入，
+            用来确认这台平板上跑的是不是最新版本 ——
+            PWA 被 Service Worker 长期缓存旧版是这里的常态，不看版本号无法分辨。
+          -->
+          <p class="version" id="app-version"></p>
         </div>
       </section>
 
