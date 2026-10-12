@@ -5,7 +5,15 @@
  * 这样打包产物只有几 KB，平板上首次打开几乎是瞬时的。
  */
 
-import { clampCustom, LIMITS, PRESETS, type Difficulty, type FootprintMode } from '../core/difficulty';
+import {
+  clampCustom,
+  LIMITS,
+  PRESETS,
+  withShape,
+  withStars,
+  type Difficulty,
+  type FootprintMode,
+} from '../core/difficulty';
 import { SHAPE_HINTS, SHAPE_IDS, SHAPE_LABELS, type ShapeId } from '../core/shape';
 import { type Prefs, type Progress } from '../game/storage';
 
@@ -80,10 +88,16 @@ export function renderDifficultyList(
   selectedId: string,
   onSelect: (d: Difficulty) => void,
   custom: Difficulty,
+  /** 家长选的形状覆盖：卡片上显示的形状必须和真开出来的局一致 */
+  shapeOverride: ShapeId | null = null,
+  /** 家长选的星星数量覆盖：卡片上的「N 颗星星」也必须和真开出来的局一致 */
+  starsOverride: number | null = null,
 ): void {
   container.replaceChildren();
 
-  const items: Difficulty[] = [...PRESETS, custom];
+  const items: Difficulty[] = [...PRESETS, custom].map((d) =>
+    withStars(withShape(d, shapeOverride), starsOverride),
+  );
 
   for (const diff of items) {
     const button = document.createElement('button');
@@ -118,18 +132,25 @@ export function renderDifficultyList(
  * 刻意不重建整个列表：列表里 `replaceChildren()` 会连带重建自定义面板，
  * 而家长此刻通常正按着滑块。只改文字节点就能同时保证摘要准确与拖动不被打断。
  */
-export function updateCustomSummary(container: HTMLElement, custom: Difficulty): void {
+export function updateCustomSummary(
+  container: HTMLElement,
+  custom: Difficulty,
+  shapeOverride: ShapeId | null = null,
+  starsOverride: number | null = null,
+): void {
   const items = container.querySelectorAll<HTMLElement>('.diff-item');
   const item = items[items.length - 1];
   if (!item) return;
 
+  const shown = withStars(withShape(custom, shapeOverride), starsOverride);
+
   const h3 = item.querySelector('h3');
-  if (h3) h3.textContent = `${custom.name}　${describeSize(custom)}`;
+  if (h3) h3.textContent = `${shown.name}　${describeSize(shown)}`;
 
   const tags = item.querySelector('.diff-tags');
   if (!tags) return;
   tags.replaceChildren();
-  for (const label of describeDifficulty(custom)) {
+  for (const label of describeDifficulty(shown)) {
     const tag = document.createElement('span');
     tag.className = 'tag';
     tag.textContent = label;
@@ -181,6 +202,9 @@ export function describeDifficulty(diff: Difficulty): string[] {
  * 若闭包捕获的是一份固定快照，那么「先调宽度、再调高度」时，
  * 调高度会基于旧快照写回，把刚设好的宽度又覆盖回去 ——
  * 家长看到的现象是「拖了不生效」。用 getter 每次读取最新值即可根治。
+ *
+ * 这里只保留「会改变迷宫结构与手感」的参数。星星数量刻意不在此列：
+ * 它对所有难度档位生效，单独放在上方的 renderStarsField 里。
  */
 export function renderCustomPanel(
   container: HTMLElement,
@@ -203,11 +227,6 @@ export function renderCustomPanel(
   };
 
   container.append(
-    shapeField({
-      value: snapshot.shape,
-      hint: '换个形状换的是空间感，尺寸和难度都不变。',
-      onInput: (v) => emit({ shape: v }),
-    }),
     sliderField({
       key: 'cols',
       label: '迷宫宽度',
@@ -281,17 +300,6 @@ export function renderCustomPanel(
       hint: '开启后会记录用时；低龄段建议关掉，避免造成压力。',
       onInput: (v) => emit({ timed: v }),
     }),
-    sliderField({
-      key: 'stars',
-      label: '星星数量',
-      min: LIMITS.minStars,
-      max: LIMITS.maxStars,
-      step: 1,
-      value: snapshot.stars,
-      display: (v) => (v === 0 ? '不要星星' : `${v} 颗`),
-      hint: '星星放在必经之路上，纯属奖励，不收集也能通关。',
-      onInput: (v) => emit({ stars: v }),
-    }),
     toggleField({
       label: '卡住时给提示箭头',
       checked: snapshot.hintDelayMs !== null,
@@ -356,20 +364,27 @@ function sliderField(opts: SliderFieldOptions): HTMLElement {
   return field;
 }
 
-interface ShapeFieldOptions {
-  value: ShapeId;
-  hint: string;
-  onInput: (v: ShapeId) => void;
+export interface ShapeFieldOptions {
+  /** 家长指定的形状；null = 跟随难度档位自带的形状 */
+  value: ShapeId | null;
+  /** value 为 null 时实际生效的形状（当前选中档位自带的） */
+  fallback: ShapeId;
+  onInput: (v: ShapeId | null) => void;
 }
 
 /**
- * 形状选择器。
+ * 形状选择器：单独一行，位于难度列表之上。
+ *
+ * 刻意不放在「家长自定义」面板里 —— 那里会让人以为形状只影响自定义档位，
+ * 而实际上它与难度正交：选定后所有档位都用这个形状。
  *
  * 用一排可点的按钮而不是 <select>：形状是「看得见」的东西，
  * 平板上点一下就能立刻在下面的难度卡片上看到文字变化，
  * 比下拉菜单直观得多；而且 5 个按钮一排刚好放得下。
  */
-function shapeField(opts: ShapeFieldOptions): HTMLElement {
+export function renderShapeField(container: HTMLElement, opts: ShapeFieldOptions): void {
+  container.replaceChildren();
+
   const field = document.createElement('div');
   field.className = 'field field-wide';
   field.dataset['field'] = 'shape';
@@ -385,29 +400,126 @@ function shapeField(opts: ShapeFieldOptions): HTMLElement {
 
   const hint = document.createElement('p');
   hint.className = 'field-hint';
-  const hintText = (id: ShapeId) => `${opts.hint}${SHAPE_HINTS[id]}`;
-  hint.textContent = hintText(opts.value);
+
+  /** 「跟随难度」时也能一键回到各档位自己的默认形状。 */
+  const reset = document.createElement('button');
+  reset.type = 'button';
+  reset.className = 'link-btn';
+  reset.dataset['role'] = 'shape-reset';
+  reset.textContent = '恢复各难度的默认形状';
+
+  const sync = (current: ShapeId | null) => {
+    const shown = current ?? opts.fallback;
+    for (const btn of group.querySelectorAll<HTMLElement>('.shape-btn')) {
+      btn.setAttribute('aria-pressed', btn.dataset['shape'] === shown ? 'true' : 'false');
+    }
+    const scope =
+      current === null
+        ? `现在跟随难度档位（当前档位是${SHAPE_LABELS[opts.fallback]}）；点任意一个形状，之后所有难度都用它。`
+        : `所有难度都用它，不再跟随档位。`;
+    hint.textContent = `${SHAPE_HINTS[shown]}${scope}`;
+    reset.hidden = current === null;
+  };
 
   for (const id of SHAPE_IDS) {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'shape-btn';
     button.dataset['shape'] = id;
-    button.setAttribute('aria-pressed', id === opts.value ? 'true' : 'false');
     button.textContent = SHAPE_LABELS[id];
     button.addEventListener('click', () => {
-      // 只切高亮、只改说明文字，不重建面板：重建会丢掉滚动位置，也会打断后续操作
-      for (const other of group.querySelectorAll('.shape-btn')) {
-        other.setAttribute('aria-pressed', other === button ? 'true' : 'false');
-      }
-      hint.textContent = hintText(id);
+      // 只切高亮、只改说明文字，不重建整行：重建会丢掉滚动位置，也会打断后续操作
+      sync(id);
       opts.onInput(id);
     });
     group.append(button);
   }
 
-  field.append(label, group, hint);
-  return field;
+  reset.addEventListener('click', () => {
+    sync(null);
+    opts.onInput(null);
+  });
+
+  sync(opts.value);
+
+  field.append(label, group, hint, reset);
+  container.append(field);
+}
+
+export interface StarsFieldOptions {
+  /** 家长指定的星星数量；null = 跟随难度档位自带的 */
+  value: number | null;
+  /** value 为 null 时实际生效的数量（当前选中档位自带的） */
+  fallback: number;
+  onInput: (v: number | null) => void;
+}
+
+/** 星星数量的显示文案，滑块与「跟随难度」复位两处共用。 */
+function starsDisplay(v: number): string {
+  return v === 0 ? '不要星星' : `${v} 颗`;
+}
+
+/**
+ * 星星数量选择器：与形状一样单独一行、位于难度列表之上。
+ *
+ * 为什么不能塞进「家长自定义」面板：那里每一项都只属于「自定义」档位，
+ * 而星星数量与难度正交 —— 它只是奖励，不参与迷宫结构，家长调一次就该
+ * 对每一档都生效。早前把它放在自定义面板里，家长在「入门」（默认选中）下
+ * 把星星拉到 6 颗再开局，开局依然是 0 颗 —— 这正是「设置后没有生效」的根因。
+ */
+export function renderStarsField(container: HTMLElement, opts: StarsFieldOptions): void {
+  container.replaceChildren();
+
+  /** 「跟随档位」时也能一键回到各档位自带的星星数量。 */
+  const reset = document.createElement('button');
+  reset.type = 'button';
+  reset.className = 'link-btn';
+  reset.dataset['role'] = 'stars-reset';
+  reset.textContent = '跟随各难度的默认数量';
+
+  // 「跟随档位」与「家长定死」两种状态必须说清楚，否则家长看到滑块停在
+  // 某个数字上，无法判断那是自己设的还是跟着档位来的。
+  const rule = '约三分之一的星星藏在死路尽头当诱饵（专门引人走错路），其余摆在必经之路上。星星只是奖励，不收集也能通关。';
+  const hintFor = (value: number | null) =>
+    value === null
+      ? `${rule}现在跟随难度档位（当前档位是${starsDisplay(opts.fallback)}）；拖动滑块后，所有难度都用这个数量。`
+      : `${rule}所有难度都用这个数量，不再跟随档位。`;
+
+  const sync = (value: number | null) => {
+    reset.hidden = value === null;
+    if (hint) hint.textContent = hintFor(value);
+  };
+
+  const field = sliderField({
+    key: 'stars',
+    label: '星星数量',
+    min: LIMITS.minStars,
+    max: LIMITS.maxStars,
+    step: 1,
+    value: opts.value ?? opts.fallback,
+    display: starsDisplay,
+    hint: hintFor(opts.value),
+    onInput: (v) => {
+      // 拖动即视为「不再跟随档位」，复位按钮与说明文字随之切换
+      sync(v);
+      opts.onInput(v);
+    },
+  });
+
+  const hint = field.querySelector<HTMLElement>('.field-hint');
+  const range = field.querySelector<HTMLInputElement>('input[type="range"]');
+  const output = field.querySelector<HTMLOutputElement>('output');
+
+  reset.addEventListener('click', () => {
+    sync(null);
+    if (range) range.value = String(opts.fallback);
+    if (output) output.textContent = starsDisplay(opts.fallback);
+    opts.onInput(null);
+  });
+
+  sync(opts.value);
+  field.append(reset);
+  container.append(field);
 }
 
 interface SelectFieldOptions {

@@ -299,8 +299,12 @@ async function runChromium(browser) {
   await page.click('#btn-start');
   await page.waitForTimeout(700);
   const hardInfo = await page.evaluate(() => window.__mazeDebug.mazeInfo());
-  check('挑战难度参数生效（18x18）', hardInfo.cols === 18 && hardInfo.rows === 18,
+  // 挑战档已按成年人难度重配：尺寸顶到网格上限、岔路拉满、环路清零
+  check('挑战难度参数生效（24x24）', hardInfo.cols === 24 && hardInfo.rows === 24,
     `${hardInfo.cols}x${hardInfo.rows}`);
+  check('挑战难度岔路密集、死胡同多（成人难度）',
+    hardInfo.junctions > 55 && hardInfo.deadEnds > 55,
+    `岔路=${hardInfo.junctions} 死胡同=${hardInfo.deadEnds} 格子=${hardInfo.mazeCells}`);
 
   // 挑战档没有脚印，检查足迹数组为空
   check('挑战难度不显示脚印', hardInfo.footprints <= 1, `footprints=${hardInfo.footprints}`);

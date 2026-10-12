@@ -61,6 +61,18 @@
           <span class="spacer"></span>
         </header>
         <div class="scroll">
+          <!--
+            形状是跨难度的设置（选定后所有档位都用它），
+            所以放在难度列表之上、且不在「家长自定义」面板里，
+            免得被理解成「只影响自定义档位」。
+          -->
+          <div class="shape-panel" id="shape-panel"></div>
+          <!--
+            星星数量与形状一样是跨难度的设置：它只是奖励、不改变迷宫结构，
+            因此放在难度列表之上。曾经它藏在「家长自定义」面板里，
+            家长在「入门」档下调整后开局仍是 0 颗 —— 用户报告的「设置后没生效」。
+          -->
+          <div class="shape-panel" id="stars-panel"></div>
           <div class="diff-list" id="diff-list"></div>
           <div class="custom-panel" id="custom-panel"></div>
         </div>

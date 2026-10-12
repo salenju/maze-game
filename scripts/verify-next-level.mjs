@@ -128,7 +128,7 @@ check('「再走一遍这张」难度尺寸不变',
 await page.goto(BASE, { waitUntil: 'networkidle' });
 await page.click('#btn-difficulty');
 await page.waitForTimeout(400);
-await page.locator('.diff-item').nth(3).click(); // 挑战 18x18
+await page.locator('.diff-item').nth(3).click(); // 挑战 24x24
 await page.waitForTimeout(250);
 await page.click('#btn-start');
 await page.waitForTimeout(800);
@@ -138,8 +138,8 @@ check('挑战档通关后按钮仍可用（不存在到顶）', hardNextVisible)
 await page.click('#btn-next');
 await page.waitForTimeout(900);
 const hardInfo = await page.evaluate(() => window.__mazeDebug.mazeInfo());
-check('挑战档换地图后仍是 18x18（不越界、不变档）',
-  hardInfo.cols === 18 && hardInfo.rows === 18, `${hardInfo.cols}x${hardInfo.rows}`);
+check('挑战档换地图后仍是 24x24（不越界、不变档）',
+  hardInfo.cols === 24 && hardInfo.rows === 24, `${hardInfo.cols}x${hardInfo.rows}`);
 
 await ctx.close();
 await browser.close();

@@ -504,10 +504,89 @@ export function solve(maze: Maze, from: Cell = maze.start, to: Cell = maze.exit)
   return path;
 }
 
+/** 从一个死胡同尽头往回走，直到遇到岔路口或起点/终点，途中的格子数。 */
+function deadEndDepth(maze: Maze, end: Cell): number {
+  let prev: Cell | null = null;
+  let cur = end;
+  let depth = 1;
+  // 死胡同是树上的枝，不会绕回来；但要防御被人为构造的环路，加个硬上限
+  for (let guard = 0; guard < maze.cols * maze.rows; guard++) {
+    const next = openings(maze, cur.x, cur.y)
+      .map((dir) => ({ x: cur.x + (DX[dir] ?? 0), y: cur.y + (DY[dir] ?? 0) }))
+      .find((c) => !(prev && c.x === prev.x && c.y === prev.y));
+    if (!next) break;
+    // 走到岔路口/起终点就停：再往前就是「正路」了
+    if (openings(maze, next.x, next.y).length !== 2) break;
+    if (next.x === maze.start.x && next.y === maze.start.y) break;
+    if (next.x === maze.exit.x && next.y === maze.exit.y) break;
+    depth++;
+    prev = cur;
+    cur = next;
+  }
+  return depth;
+}
+
 /**
- * 在解答路径上均匀放置收集物（星星）。
- * 刻意放在必经之路上：6 岁孩子不会为了收集而绕路，
- * 放在支线上只会变成「看得见吃不到」的挫败来源。
+ * 挑一批死路尽头当「诱饵」。
+ *
+ * 优先挑最长的死路：越长的支线，走进去再退出来的代价越大，
+ * 「这条路到底对不对」的犹豫也越久 —— 这正是要的迷惑感。
+ * 同时尽量让诱饵彼此分散开，免得两个诱饵挤在同一个小角落。
+ */
+function pickDeadEndDecoys(maze: Maze, count: number, onPath: ReadonlySet<number>): Cell[] {
+  if (count <= 0) return [];
+
+  const candidates: { cell: Cell; depth: number }[] = [];
+  for (let y = 0; y < maze.rows; y++) {
+    for (let x = 0; x < maze.cols; x++) {
+      if (!inMaze(maze, x, y)) continue;
+      if (onPath.has(cellIndex(maze, x, y))) continue;
+      if (openings(maze, x, y).length !== 1) continue;
+      if (x === maze.start.x && y === maze.start.y) continue;
+      if (x === maze.exit.x && y === maze.exit.y) continue;
+      candidates.push({ cell: { x, y }, depth: deadEndDepth(maze, { x, y }) });
+    }
+  }
+  // 只保留真正的「走廊尽头」，一点点小凸起（1 格深）不值得当诱饵
+  const deep = candidates.filter((c) => c.depth >= 2);
+  const pool = deep.length >= count ? deep : candidates;
+
+  // 深 → 浅；同深度按格子下标，保证同一种子每次结果一致
+  pool.sort(
+    (a, b) => b.depth - a.depth || cellIndex(maze, a.cell.x, a.cell.y) - cellIndex(maze, b.cell.x, b.cell.y),
+  );
+
+  const MIN_GAP = 2;
+  const picked: Cell[] = [];
+  const farEnough = (cell: Cell) =>
+    picked.every((p) => Math.max(Math.abs(p.x - cell.x), Math.abs(p.y - cell.y)) > MIN_GAP);
+  for (const c of pool) {
+    if (picked.length >= count) break;
+    if (farEnough(c.cell)) picked.push(c.cell);
+  }
+  // 分散不开（小迷宫）就放宽：宁可挤一点也不少放
+  for (const c of pool) {
+    if (picked.length >= count) break;
+    if (!picked.some((p) => p.x === c.cell.x && p.y === c.cell.y)) picked.push(c.cell);
+  }
+  return picked;
+}
+
+/**
+ * 放置收集物（星星）：多数落在必经之路上，约三分之一扔进死路尽头当诱饵。
+ *
+ * 必经之路上的那些：6 岁孩子不会为了收集而绕路，全放支线上只会变成
+ * 「看得见吃不到」的挫败来源，所以主星仍然沿着解答路径均匀铺开。
+ *
+ * 但主星全在必经之路上时，收集就毫无取舍 —— 顺着唯一正确方向走必然全吃到。
+ * 于是留一部分放进死路尽头：看到岔路深处的星星得先判断那是不是正路，
+ * 走错了要原路退回来。这是成年难度的「迷惑与趣味」，也是家长明确要求的做法。
+ * 星星始终不是通关条件，不捡也能走出迷宫。
+ *
+ * 下标用「每个等分段的中心」而不是「等分点四舍五入」：
+ * 后者在路径较短或星星较多时会撞格（例如 8 颗星落在 8 格路径上只能放出 5 颗），
+ * 表现为「家长设了 8 颗，开局却只看到 5 颗」。中心取样在 n ≤ 路径长度时
+ * 逐格递增的步长恒 ≥ 1，因此必定取到互不相同的 n 个位置，且两端各留半格。
  */
 export function placeCollectibles(maze: Maze, count: number): Cell[] {
   if (count <= 0) return [];
@@ -517,13 +596,19 @@ export function placeCollectibles(maze: Maze, count: number): Cell[] {
   const interior = path.slice(1, -1); // 排除起点与终点
   if (interior.length === 0) return [];
 
-  const n = Math.min(count, interior.length);
-  const result: Cell[] = [];
-  for (let i = 1; i <= n; i++) {
-    const t = i / (n + 1);
-    const idx = Math.min(interior.length - 1, Math.round(t * (interior.length - 1)));
-    const cell = interior[idx] as Cell;
-    // 去重：路径较短时 round 可能命中同一格
+  const pathKeys = new Set<number>();
+  for (const c of path) pathKeys.add(cellIndex(maze, c.x, c.y));
+
+  // 2 颗以下不放诱饵：只剩一颗星还藏进死路，就纯粹是刁难了
+  const decoyTarget = count >= 3 ? Math.round(count / 3) : 0;
+  const decoys = pickDeadEndDecoys(maze, decoyTarget, pathKeys);
+
+  const onPathCount = Math.min(count - decoys.length, interior.length);
+  const result: Cell[] = [...decoys];
+  for (let i = 0; i < onPathCount; i++) {
+    const idx = Math.floor(((i + 0.5) * interior.length) / onPathCount);
+    const cell = interior[Math.min(interior.length - 1, idx)] as Cell;
+    // 兜底去重：上面的取法本就不会重复，留一道保险以防公式被改动
     if (!result.some((c) => c.x === cell.x && c.y === cell.y)) result.push(cell);
   }
   return result;

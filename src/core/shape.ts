@@ -10,11 +10,11 @@
  *   再把该点按形状的外接矩形放大回「外接圆半径 1」的坐标，
  *   于是只要比较 半径 与 r(θ) 就能判断内外。
  *
- * 空心（环形走廊）不用半径比例硬算，而是用「腐蚀」：
- *   把外轮廓反复向内收 k 圈，收掉的部分就是洞。
- *   这样做的好处是洞的厚度天然等于 k，环形走廊永远不会细到断成几截——
- *   而按半径比例去挖，小尺寸下必然产生只有一格宽的环，
- *   四连通会碎掉，「球走不过去」的 bug 就来了。
+ * 所有形状都是**实心**的（早期版本把圆/六边形/三角形中心腐蚀成洞，
+ * 做成环形走廊）。环形走廊看着好看，实际玩起来只有一圈窄廊，
+ * 中间大片格子不可达，岔路口数量骤减 —— 用户的原话是
+ * 「其余形状中间都是空心的，基本还是一条道走到黑」。
+ * 现在每个形状都吃满自己的轮廓：面积更大、可达格子更多，岔路才有地方长。
  */
 
 export type ShapeId = 'square' | 'circle' | 'hexagon' | 'triangle' | 'star';
@@ -30,22 +30,18 @@ export const SHAPE_LABELS: Record<ShapeId, string> = {
   star: '星形',
 };
 
-/** 给家长看的一句话说明。 */
+/**
+ * 给家长看的一句话说明。
+ *
+ * 所有形状内部都是填满的，因此形状只改变轮廓（好不好看、边界好不好认），
+ * 不再改变难度 —— 难度交给尺寸、岔路与环路三个参数。
+ */
 export const SHAPE_HINTS: Record<ShapeId, string> = {
-  circle: '圆圆的迷宫，走廊绕成一个圈，看起来最像真正的迷宫。',
-  hexagon: '六边形迷宫，边和角更少，走起来方向感好一点。',
-  triangle: '三角形迷宫，越往尖角越窄，适合已经玩熟的孩子。',
-  star: '五角星迷宫，五个尖角都是长走廊，最容易迷路。',
+  circle: '圆圆的迷宫，从圆心到边缘都是通道，轮廓最像真正的迷宫。',
+  hexagon: '六边形迷宫，边界是六条直边，比圆更容易判断方向。',
+  triangle: '三角形迷宫，越往尖角越窄，走到尖角就是死胡同。',
+  star: '五角星迷宫，五个尖角各拖出一条长走廊，最容易迷路。',
   square: '经典方形迷宫，和以前一样。',
-};
-
-/** 哪些形状把中心挖空成环形走廊。星形不挖：它的尖角本身就是走廊，挖了就没形了。 */
-const HOLLOW_SHAPES: Record<ShapeId, boolean> = {
-  square: false,
-  circle: true,
-  hexagon: true,
-  triangle: true,
-  star: false,
 };
 
 const TAU = Math.PI * 2;
@@ -258,7 +254,7 @@ export function largestComponent(mask: Uint8Array, cols: number, rows: number): 
   return best;
 }
 
-/** 四连通区域块数。形状自检用：环形走廊必须正好是一块。 */
+/** 四连通区域块数。形状自检用：一个形状的掩码必须正好是一块。 */
 export function componentCount(mask: Uint8Array, cols: number, rows: number): number {
   const seen = emptyMask(cols, rows);
   let count = 0;
@@ -271,67 +267,15 @@ export function componentCount(mask: Uint8Array, cols: number, rows: number): nu
   return count;
 }
 
-/** 腐蚀一圈：去掉所有「四邻中有一个不在掩码内」的格子。 */
-function erodeOnce(mask: Uint8Array, cols: number, rows: number): Uint8Array {
-  const out = emptyMask(cols, rows);
-  for (let y = 0; y < rows; y++) {
-    for (let x = 0; x < cols; x++) {
-      if (mask[y * cols + x] !== 1) continue;
-      let solid = true;
-      for (const [dx, dy] of ORTHO) {
-        const nx = x + dx;
-        const ny = y + dy;
-        if (nx < 0 || ny < 0 || nx >= cols || ny >= rows || mask[ny * cols + nx] !== 1) {
-          solid = false;
-          break;
-        }
-      }
-      if (solid) out[y * cols + x] = 1;
-    }
-  }
-  return out;
-}
-
-/** 腐蚀 times 圈。 */
-export function erode(mask: Uint8Array, cols: number, rows: number, times: number): Uint8Array {
-  let cur = mask;
-  for (let i = 0; i < times; i++) {
-    const next = erodeOnce(cur, cols, rows);
-    if (countCells(next) === 0) return next;
-    cur = next;
-  }
-  return cur;
-}
-
-/** mask 去掉 hole。 */
-function subtract(mask: Uint8Array, hole: Uint8Array): Uint8Array {
-  const out = new Uint8Array(mask.length);
-  for (let i = 0; i < mask.length; i++) out[i] = mask[i] === 1 && hole[i] !== 1 ? 1 : 0;
-  return out;
-}
-
-/** 环形走廊的最小厚度（格）。低于 2 格时四连通会碎，故有下限。 */
-function ringThickness(cols: number, rows: number): number {
-  return Math.min(cols, rows) >= 12 ? 3 : 2;
-}
-
 /**
- * 最终掩码：形状外轮廓，必要时挖空中心形成环形走廊。
+ * 最终掩码：形状的外轮廓，实心。
  *
- * 安全降级（宁可不好看也不能让球走不通）：
- *   - 腐蚀后没有洞（格子太小）→ 保留实心
- *   - 挖空后环形裂成多块 → 保留实心
- *   - 环形格子太少 → 保留实心
+ * 只保留轮廓内的格子，并把可能被切出的碎块（极端比例下会出现）丢掉：
+ * 碎块在大图上毫无意义，还会让「所有格子连通」的不变式被打破。
+ *
+ * 这里曾经还会腐蚀出中心的洞（环形走廊）。已移除：环形走廊只有一圈窄廊，
+ * 中间大片格子不可达，岔路口数量骤减，玩起来就是「一条道走到黑」。
  */
 export function buildMask(shape: ShapeId, cols: number, rows: number): Uint8Array {
-  const outer = largestComponent(buildOuterMask(shape, cols, rows), cols, rows);
-  if (!HOLLOW_SHAPES[shape]) return outer;
-
-  const hole = erode(outer, cols, rows, ringThickness(cols, rows));
-  if (countCells(hole) === 0) return outer;
-
-  const ring = subtract(outer, hole);
-  if (componentCount(ring, cols, rows) !== 1) return outer;
-  if (countCells(ring) < 12) return outer;
-  return ring;
+  return largestComponent(buildOuterMask(shape, cols, rows), cols, rows);
 }

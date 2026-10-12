@@ -6,6 +6,9 @@
  * 隐私模式 / 存储被禁用时所有函数静默降级，游戏照常可玩。
  */
 
+import { normalizeStarsOverride } from '../core/difficulty';
+import { isShapeId, type ShapeId } from '../core/shape';
+
 export interface Progress {
   /** 各难度已通关次数 */
   cleared: Record<string, number>;
@@ -23,6 +26,17 @@ export interface Prefs {
   highlightCorridors: boolean;
   /** 是否已看过操作引导 */
   tutorialSeen: boolean;
+  /**
+   * 家长在「难度设置」里选的迷宫形状，对所有难度档位生效。
+   * null = 跟随档位自带的默认形状（入门圆形、中等三角形…）。
+   */
+  shapeOverride: ShapeId | null;
+  /**
+   * 家长在「难度设置」里选的星星数量，同样对所有难度档位生效。
+   * null = 跟随档位自带的数量（入门/简单 0 颗、中等 3 颗、挑战 5 颗）。
+   * 0 是有效值（明确不要星星），不能与 null 混为一谈。
+   */
+  starsOverride: number | null;
 }
 
 const PROGRESS_KEY = 'maze.progress.v1';
@@ -39,6 +53,8 @@ const DEFAULT_PREFS: Prefs = {
   sound: true,
   highlightCorridors: false,
   tutorialSeen: false,
+  shapeOverride: null,
+  starsOverride: null,
 };
 
 export function loadProgress(): Progress {
@@ -50,7 +66,14 @@ export function saveProgress(p: Progress): void {
 }
 
 export function loadPrefs(): Prefs {
-  return { ...DEFAULT_PREFS, ...readJson<Partial<Prefs>>(PREFS_KEY, {}) };
+  const raw = readJson<Partial<Prefs>>(PREFS_KEY, {});
+  return {
+    ...DEFAULT_PREFS,
+    ...raw,
+    // 老存档没有这个字段，或被手改成非法值：一律落回「跟随档位」
+    shapeOverride: isShapeId(raw.shapeOverride) ? raw.shapeOverride : null,
+    starsOverride: normalizeStarsOverride(raw.starsOverride),
+  };
 }
 
 export function savePrefs(p: Prefs): void {

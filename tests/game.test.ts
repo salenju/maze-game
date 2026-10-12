@@ -1,6 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import { Game } from '../src/game/game';
-import { canMove, hasWall, inMaze, junctionCount, type Dir, DX, DY, type Maze } from '../src/core/maze';
+import {
+  canMove,
+  hasWall,
+  inMaze,
+  junctionCount,
+  openings,
+  type Dir,
+  DX,
+  DY,
+  type Maze,
+} from '../src/core/maze';
 import { clampCustom, PRESETS, presetById, type Difficulty } from '../src/core/difficulty';
 import { formatTime, describeDifficulty } from '../src/ui/screens';
 
@@ -634,10 +644,13 @@ describe('游戏：形状迷宫（新增圆形等形状）', () => {
     }
   });
 
-  it('星星只落在形状内部的必经之路上', () => {
+  it('星星只落在形状内部（诱饵也不会掉到形状外或不可达的地方）', () => {
     const game = new Game({ ...shapeDiff('circle', 14, 14), stars: 4 }, 555);
+    expect(game.totalStars).toBe(4);
     for (const star of game.starCells) {
       expect(inMaze(game.maze, star.x, star.y)).toBe(true);
+      // 诱饵放在死路里，但依然是能走到的格子
+      expect(openings(game.maze, star.x, star.y).length).toBeGreaterThanOrEqual(1);
     }
   });
 });

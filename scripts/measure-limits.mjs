@@ -56,7 +56,8 @@ async function startCustom(page, { cols, rows, stars, braid }) {
   await page.waitForTimeout(150);
   await field('braid').fill(String(braid));
   await page.waitForTimeout(150);
-  await field('stars').fill(String(stars));
+  // 星星数量已从自定义面板提到「跨难度」的那一行，选择器随之调整
+  await page.locator('#stars-panel input[data-field="stars"]').fill(String(stars));
   await page.waitForTimeout(200);
 
   await page.click('#btn-start');

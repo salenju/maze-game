@@ -8,7 +8,16 @@
 
 import './ui/styles.css';
 
-import { loadCustom, PRESETS, saveCustom, type Difficulty } from './core/difficulty';
+import {
+  loadCustom,
+  presetById,
+  PRESETS,
+  saveCustom,
+  withShape,
+  withStars,
+  type Difficulty,
+} from './core/difficulty';
+import type { ShapeId } from './core/shape';
 import { deadEndCount, junctionCount, mazeCellCount } from './core/maze';
 import { PointerInput, lockViewport, type PointerSample } from './game/input';
 import { Game, type WinResult } from './game/game';
@@ -33,6 +42,8 @@ import {
   renderHomeStats,
   renderInstallGuide,
   renderSettingsPanel,
+  renderShapeField,
+  renderStarsField,
   renderWinPanel,
   Screens,
   updateCustomSummary,
@@ -56,7 +67,16 @@ class App {
   private prefs: Prefs = loadPrefs();
   private custom: Difficulty = loadCustom();
 
-  private difficulty: Difficulty = PRESETS[0] as Difficulty;
+  /**
+   * 当前难度 = 选中档位 + 家长的形状/星星覆盖。
+   *
+   * 两者都是跨难度的：进了「挑战」仍然用家长选的形状，而不是档位自带的星形；
+   * 星星数量同理 —— 家长调一次就该对每一档生效，否则「设了星星却没出现」。
+   */
+  private difficulty: Difficulty = withStars(
+    withShape(PRESETS[0] as Difficulty, this.prefs.shapeOverride),
+    this.prefs.starsOverride,
+  );
   private game: Game | null = null;
   private input: PointerInput | null = null;
 
@@ -278,21 +298,100 @@ class App {
     this.screens.show('settings');
   }
 
-  /** 重绘难度列表与自定义面板。 */
+  /** 重绘形状与星星选择行、难度列表与自定义面板。 */
   private refreshDifficultyUI(): void {
+    this.refreshShapePanel();
+    this.refreshStarsPanel();
+    this.refreshDifficultyCards();
+    this.refreshCustomPanel();
+  }
+
+  /**
+   * 重画难度卡片（卡片上的形状/尺寸/星星摘要都跟着覆盖值走）。
+   *
+   * 刻意与上面两行分开：滑块拖动期间绝不能重建自己所在的那一行，
+   * 否则 range 元素被换掉、指针捕获丢失，家长只能拖动一格 ——
+   * 这正是「自定义滑块拖不动」那类缺陷的成因。
+   */
+  private refreshDifficultyCards(): void {
     renderDifficultyList(
       must('#diff-list'),
       this.difficulty.id,
       (diff) => {
-        this.difficulty = diff;
+        // diff 是档位本身（预设或自定义）：形状与星星覆盖在这里统一叠加上去，
+        // 于是「选了形状再选难度」时形状不会被档位自带的形状顶掉
+        this.difficulty = this.effective(diff);
         this.audio.play('click');
         // 只改选中态，不重建列表：重建会打断自定义面板正在进行的滑块拖动
         this.syncDifficultySelection();
+        // 「跟随难度」时两行上的默认值来自当前档位，换档必须重画
+        this.refreshShapePanel();
+        this.refreshStarsPanel();
         if (diff.id === 'custom') this.refreshCustomPanel();
       },
       this.custom,
+      this.prefs.shapeOverride,
+      this.prefs.starsOverride,
     );
-    this.refreshCustomPanel();
+  }
+
+  /**
+   * 星星数量行：与形状一样对所有难度生效。
+   *
+   * 这一行曾经是「家长自定义」面板里的一个滑块，改动只写进自定义档位，
+   * 于是家长在默认选中的「入门」档下把它拉到 6 颗、开局却一颗都没有。
+   * 提到外层并落进 prefs 之后，任何档位开局都按这个数量放星星。
+   */
+  private refreshStarsPanel(): void {
+    renderStarsField(must('#stars-panel'), {
+      value: this.prefs.starsOverride,
+      fallback: this.selectedStars(),
+      onInput: (stars: number | null) => {
+        this.prefs = { ...this.prefs, starsOverride: stars };
+        savePrefs(this.prefs);
+        this.difficulty = this.effective(this.selected());
+        // 卡片上写着「N 颗星星」：只重画卡片，不动正在拖的滑块
+        this.refreshDifficultyCards();
+      },
+    });
+  }
+
+  /** 形状选择行：形状对所有难度生效，改动后难度卡片上的形状也要立刻跟着变。 */
+  private refreshShapePanel(): void {
+    renderShapeField(must('#shape-panel'), {
+      value: this.prefs.shapeOverride,
+      fallback: this.selectedShape(),
+      onInput: (shape: ShapeId | null) => {
+        this.prefs = { ...this.prefs, shapeOverride: shape };
+        savePrefs(this.prefs);
+        this.audio.play('click');
+        this.difficulty = this.effective(this.selected());
+        // 卡片上写的是「星形 18×18」这类摘要，形状一改就必须重画，
+        // 否则家长看到的和真开出来的不是同一张图。
+        // 形状行自己是按钮，重画不会打断任何拖动，仍然可以整块刷新。
+        this.refreshDifficultyUI();
+      },
+    });
+  }
+
+  /** 当前选中的档位本身（不含形状覆盖）。预设是常量，自定义存在 this.custom。 */
+  private selected(): Difficulty {
+    return this.difficulty.id === 'custom' ? this.custom : presetById(this.difficulty.id);
+  }
+
+  /** 选中档位自带的形状，即「跟随难度」时会用到的形状。 */
+  private selectedShape(): ShapeId {
+    return this.selected().shape;
+  }
+
+  /** 选中档位自带的星星数量，即「跟随难度」时会用到的数量。 */
+  private selectedStars(): number {
+    return this.selected().stars;
+  }
+
+  /** 把家长的形状与星星覆盖叠加到给定难度上。 */
+  private effective(diff: Difficulty): Difficulty {
+    return withStars(withShape(diff, this.prefs.shapeOverride), this.prefs.starsOverride);
   }
 
   /** 让列表高亮与 this.difficulty 保持一致（自定义项永远排在最后）。 */
@@ -315,12 +414,17 @@ class App {
       (updated) => {
         this.custom = updated;
         saveCustom(updated);
-        // 正在使用自定义难度时，改动立即生效
+        // 正在使用自定义难度时，改动立即生效（形状覆盖照旧叠加在自定义之上）
         if (this.difficulty.id === 'custom') {
-          this.difficulty = updated;
+          this.difficulty = this.effective(updated);
         }
         // 同步列表里「自定义」卡片的尺寸与标签，但不重建列表
-        updateCustomSummary(must('#diff-list'), updated);
+        updateCustomSummary(
+          must('#diff-list'),
+          updated,
+          this.prefs.shapeOverride,
+          this.prefs.starsOverride,
+        );
       },
     );
   }
@@ -334,9 +438,11 @@ class App {
 
   private startGame(difficulty: Difficulty, seed: number): void {
     this.audio.unlock();
-    this.difficulty = difficulty;
+    // 兜底再叠加一次形状覆盖：首页「开始游戏」等入口传进来的可能是档位本身
+    const diff = this.effective(difficulty);
+    this.difficulty = diff;
 
-    this.game = new Game(difficulty, seed, {
+    this.game = new Game(diff, seed, {
       onStar: () => this.audio.play('star'),
       onBump: () => {
         this.audio.play('bump');
@@ -347,8 +453,8 @@ class App {
 
     // HUD 上把形状也写出来：孩子玩到一半被家长换过形状时，
     // 一行「圆形 7×7」比只有尺寸更能说明这一局是什么。
-    must('#hud-diff').textContent = `${difficulty.name}　${describeSize(difficulty)}`;
-    must('#hud-time').textContent = difficulty.timed ? '0:00' : '--:--';
+    must('#hud-diff').textContent = `${diff.name}　${describeSize(diff)}`;
+    must('#hud-time').textContent = diff.timed ? '0:00' : '--:--';
     must('#hud-stars').textContent = this.starsLabel();
 
     // 每局重置底部提示，避免沿用上一局残留的「这边是墙」

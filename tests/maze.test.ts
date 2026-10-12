@@ -23,7 +23,14 @@ import {
   SHAPE_IDS,
   type ShapeId,
 } from '../src/core/shape';
-import { clampCustom, LIMITS, PRESETS, presetById } from '../src/core/difficulty';
+import {
+  clampCustom,
+  LIMITS,
+  normalizeStarsOverride,
+  PRESETS,
+  presetById,
+  withStars,
+} from '../src/core/difficulty';
 import { describeDifficulty } from '../src/ui/screens';
 
 /** 所有形状 × 一批有代表性的尺寸（含长方形与极端比例）。 */
@@ -192,22 +199,133 @@ describe('迷宫生成', () => {
 });
 
 describe('星星放置', () => {
-  it('星星落在解答路径上，且不与起终点重合', () => {
+  const keyOf = (c: { x: number; y: number }) => `${c.x},${c.y}`;
+
+  /**
+   * 测试里独立数一遍「这条死路有多深」：从尽头往里走，直到遇到岔路口或起终点。
+   * 刻意不复用实现里的同名逻辑，免得两边一起错还能通过。
+   */
+  function branchDepth(
+    maze: ReturnType<typeof generateMaze>,
+    end: { x: number; y: number },
+  ): number {
+    let prev: { x: number; y: number } | null = null;
+    let cur = end;
+    let depth = 1;
+    for (let guard = 0; guard < maze.cols * maze.rows; guard++) {
+      const next = openings(maze, cur.x, cur.y)
+        .map((dir) => ({ x: cur.x + (DX[dir] ?? 0), y: cur.y + (DY[dir] ?? 0) }))
+        .find((c) => !(prev && c.x === prev.x && c.y === prev.y));
+      if (!next) break;
+      if (openings(maze, next.x, next.y).length !== 2) break;
+      if (next.x === maze.start.x && next.y === maze.start.y) break;
+      if (next.x === maze.exit.x && next.y === maze.exit.y) break;
+      depth++;
+      prev = cur;
+      cur = next;
+    }
+    return depth;
+  }
+
+  it('星星要么在必经之路上，要么在死路尽头，都不与起终点重合', () => {
     for (let s = 0; s < 20; s++) {
       const maze = generateMaze({ cols: 14, rows: 14, braid: 0.25 }, mulberry32(s * 13 + 1));
       const stars = placeCollectibles(maze, 4);
       const path = solve(maze);
-      const key = (c: { x: number; y: number }) => `${c.x},${c.y}`;
-      const pathKeys = new Set(path.map(key));
+      const pathKeys = new Set(path.map(keyOf));
 
       expect(stars.length).toBeLessThanOrEqual(4);
       for (const star of stars) {
-        expect(pathKeys.has(key(star))).toBe(true);
-        expect(key(star)).not.toBe(key(maze.start));
-        expect(key(star)).not.toBe(key(maze.exit));
+        expect(inMaze(maze, star.x, star.y)).toBe(true);
+        expect(keyOf(star)).not.toBe(keyOf(maze.start));
+        expect(keyOf(star)).not.toBe(keyOf(maze.exit));
+        // 不在正路上就必须是死胡同（只有一个出口）
+        if (!pathKeys.has(keyOf(star))) {
+          expect(openings(maze, star.x, star.y).length).toBe(1);
+        }
       }
-      // 无重复
-      expect(new Set(stars.map(key)).size).toBe(stars.length);
+      expect(new Set(stars.map(keyOf)).size).toBe(stars.length);
+    }
+  });
+
+  it('约三分之一落在死路尽头当诱饵（家长要求的「迷惑」）', () => {
+    for (let s = 0; s < 10; s++) {
+      const maze = generateMaze(
+        { cols: 14, rows: 14, braid: 0, branchiness: 0.8 },
+        mulberry32(s * 17 + 3),
+      );
+      const pathKeys = new Set(solve(maze).map(keyOf));
+      const stars = placeCollectibles(maze, 6);
+      const decoys = stars.filter((c) => !pathKeys.has(keyOf(c)));
+
+      expect(stars.length).toBe(6);
+      expect(decoys.length).toBe(2); // round(6 / 3)
+      for (const d of decoys) expect(openings(maze, d.x, d.y).length).toBe(1);
+    }
+  });
+
+  it('只要一个诱饵时，它必然是最深的死路（走进走出代价最大）', () => {
+    const maze = generateMaze(
+      { cols: 16, rows: 16, braid: 0, branchiness: 0.9 },
+      mulberry32(41),
+    );
+    const pathKeys = new Set(solve(maze).map(keyOf));
+    const stars = placeCollectibles(maze, 3); // round(3 / 3) → 只要 1 个诱饵
+    const decoys = stars.filter((c) => !pathKeys.has(keyOf(c)));
+    expect(decoys.length).toBe(1);
+
+    let deepest = 0;
+    for (let y = 0; y < maze.rows; y++) {
+      for (let x = 0; x < maze.cols; x++) {
+        if (!inMaze(maze, x, y)) continue;
+        const cell = { x, y };
+        if (pathKeys.has(keyOf(cell))) continue;
+        if (openings(maze, x, y).length !== 1) continue;
+        deepest = Math.max(deepest, branchDepth(maze, cell));
+      }
+    }
+    expect(branchDepth(maze, decoys[0] as { x: number; y: number })).toBe(deepest);
+  });
+
+  it('多个诱饵要够深且彼此分散（都挤在一个角落就不好玩了）', () => {
+    const maze = generateMaze(
+      { cols: 16, rows: 16, braid: 0, branchiness: 0.9 },
+      mulberry32(41),
+    );
+    const pathKeys = new Set(solve(maze).map(keyOf));
+    const stars = placeCollectibles(maze, 6);
+    const decoys = stars.filter((c) => !pathKeys.has(keyOf(c)));
+
+    expect(decoys.length).toBe(2);
+    for (const d of decoys) {
+      expect(openings(maze, d.x, d.y).length).toBe(1);
+      expect(branchDepth(maze, d)).toBeGreaterThanOrEqual(2);
+    }
+    const [a, b] = decoys as { x: number; y: number }[];
+    expect(Math.max(Math.abs(a.x - b.x), Math.abs(a.y - b.y))).toBeGreaterThan(2);
+  });
+
+  it('2 颗以下不放诱饵（只剩一颗还藏起来就是刁难）', () => {
+    const maze = generateMaze(
+      { cols: 14, rows: 14, braid: 0, branchiness: 0.8 },
+      mulberry32(23),
+    );
+    const pathKeys = new Set(solve(maze).map(keyOf));
+    for (const star of placeCollectibles(maze, 2)) {
+      expect(pathKeys.has(keyOf(star))).toBe(true);
+    }
+  });
+
+  it('路径放得下时「要几颗就给几颗」（不会因取样撞格少给）', () => {
+    // 旧实现按等分点 round 取下标，短路径上会撞到同一格再去重，
+    // 于是家长设 8 颗、开局只看到 5 颗 —— 另一种「设置没生效」。
+    for (let s = 0; s < 20; s++) {
+      const maze = generateMaze({ cols: 12, rows: 12, braid: 0.2 }, mulberry32(s * 31 + 5));
+      const capacity = solve(maze).length - 2;
+      const want = Math.min(8, capacity);
+      expect(placeCollectibles(maze, want).length).toBe(want);
+      // 贴满整条路径也要一格一颗，不重复、不越界
+      expect(placeCollectibles(maze, capacity).length).toBe(capacity);
     }
   });
 
@@ -216,12 +334,14 @@ describe('星星放置', () => {
     expect(placeCollectibles(maze, 0)).toEqual([]);
   });
 
-  it('请求数量超过路径容量时不会越界或重复', () => {
+  it('请求数量超过容量时不会越界或重复', () => {
     const maze = generateMaze({ cols: 6, rows: 6, braid: 0.6 }, mulberry32(9));
     const stars = placeCollectibles(maze, 50);
-    const keys = new Set(stars.map((c) => `${c.x},${c.y}`));
+    const keys = new Set(stars.map(keyOf));
     expect(keys.size).toBe(stars.length);
-    expect(stars.length).toBeLessThanOrEqual(solve(maze).length - 2);
+    // 诱饵不在正路上，容量上限是「整张图的可走格子」，而不是路径长度
+    expect(stars.length).toBeLessThanOrEqual(mazeCellCount(maze));
+    for (const s of stars) expect(inMaze(maze, s.x, s.y)).toBe(true);
   });
 });
 
@@ -259,8 +379,71 @@ describe('难度配置', () => {
     expect(wild.rows).toBe(LIMITS.minRows);
     expect(wild.braid).toBe(1);
     expect(wild.footprintFadeSec).toBe(1);
-    // 星星数量随格子数收敛，不会出现「星星比格子还多」
-    expect(wild.stars).toBeLessThanOrEqual((wild.cols * wild.rows) / 12);
+    // 星星只按滑块上限收敛。旧实现还会按格子面积二次打折
+    // （floor(cols*rows/12)），家长在小迷宫上拉到 8 颗却只拿到 3 颗，
+    // 表现就是「星星数量设置后没有生效」。
+    expect(wild.stars).toBe(LIMITS.maxStars);
+    // 上限本身仍然保证「星星不会比格子还多」
+    expect(LIMITS.maxStars).toBeLessThan(LIMITS.minCols * LIMITS.minRows);
+  });
+
+  it('小迷宫也照办家长要的星星数量（不再按面积打折）', () => {
+    const tiny = clampCustom({ cols: LIMITS.minCols, rows: LIMITS.minRows, stars: 6 });
+    expect(tiny.stars).toBe(6);
+    // 真正兜底的是放置逻辑：星星只会摆在必经之路上，格子不够自然少放
+    const maze = generateMaze({ cols: 6, rows: 6, braid: 0 }, mulberry32(17));
+    const stars = placeCollectibles(maze, tiny.stars);
+    expect(stars.length).toBeGreaterThan(0);
+    expect(stars.length).toBeLessThanOrEqual(solve(maze).length - 2);
+  });
+
+  it('星星数量是跨难度的覆盖值：null 跟随档位，给了就压过档位', () => {
+    const medium = presetById('medium');
+    expect(withStars(medium, null)).toBe(medium);
+    expect(withStars(medium, medium.stars)).toBe(medium);
+    expect(withStars(medium, 0).stars).toBe(0);
+    expect(withStars(presetById('starter'), 6).stars).toBe(6);
+    // 其余字段不受影响
+    expect(withStars(medium, 6).cols).toBe(medium.cols);
+    expect(withStars(medium, 6).braid).toBe(medium.braid);
+  });
+
+  it('存档里的星星覆盖值被收敛，非法值落回「跟随档位」', () => {
+    expect(normalizeStarsOverride(5)).toBe(5);
+    expect(normalizeStarsOverride(0)).toBe(0); // 0 是「不要星星」，不是「没设置」
+    expect(normalizeStarsOverride(999)).toBe(LIMITS.maxStars);
+    expect(normalizeStarsOverride(-3)).toBe(LIMITS.minStars);
+    expect(normalizeStarsOverride(undefined)).toBeNull();
+    expect(normalizeStarsOverride('6')).toBeNull();
+    expect(normalizeStarsOverride(Number.NaN)).toBeNull();
+  });
+
+  it('最难的一档按成年人难度配置：尺寸顶格、岔路拉满、没有环路', () => {
+    const hard = presetById('hard');
+    // 用户反馈「即使最难的关卡也是一条道走到黑，分岔路不够当干扰」
+    expect(hard.cols).toBe(LIMITS.maxCols);
+    expect(hard.rows).toBe(LIMITS.maxRows);
+    expect(hard.branchiness).toBe(1);
+    expect(hard.braid).toBe(0);
+    // 无脚印、无提示箭头，只能靠自己记住走过的路
+    expect(hard.footprint).toBe('none');
+    expect(hard.hintDelayMs).toBeNull();
+  });
+
+  it('最难的一档实测岔路/死胡同显著多于旧版 18×18 星形', () => {
+    const adult = generateMaze(
+      {
+        cols: presetById('hard').cols,
+        rows: presetById('hard').rows,
+        shape: presetById('hard').shape,
+        braid: presetById('hard').braid,
+        branchiness: presetById('hard').branchiness,
+      },
+      mulberry32(2024),
+    );
+    // 旧版：18×18 星形、branchiness 0.85、braid 0.15（实测岔路约 40、死胡同约 39）
+    expect(junctionCount(adult)).toBeGreaterThan(55);
+    expect(deadEndCount(adult)).toBeGreaterThan(55);
   });
 
   it('自定义的空输入给出可用默认值', () => {
@@ -372,21 +555,40 @@ describe('形状迷宫：掩码与连通性', () => {
     }
   });
 
-  it('圆形/六边形/三角形是空心的（中心有洞，形成环形走廊）', () => {
-    for (const shape of ['circle', 'hexagon', 'triangle'] as ShapeId[]) {
+  it('所有形状内部都是填满的（不再挖空成环形走廊）', () => {
+    // 用户反馈：「其余形状中间都是空心的，基本还是一条道走到黑」。
+    // 环形走廊只有一圈窄廊，中间大片格子不可达，岔路根本没有地方长。
+    for (const shape of SHAPE_IDS) {
       const [c, r] = [14, 14] as const;
       const maze = generateMaze({ cols: c, rows: r, braid: 0.2, shape }, mulberry32(3));
-      const cx = Math.floor(c / 2);
-      const cy = Math.floor(r / 2);
-      expect(inMaze(maze, cx, cy)).toBe(false);
+      expect(inMaze(maze, Math.floor(c / 2), Math.floor(r / 2))).toBe(true);
     }
   });
 
-  it('星形不空心（尖角本身就是走廊，挖了就没了）', () => {
-    const [c, r] = [14, 14] as const;
-    const maze = generateMaze({ cols: c, rows: r, braid: 0.2, shape: 'star' }, mulberry32(3));
-    // 星形中心是实的
-    expect(inMaze(maze, Math.floor(c / 2), Math.floor(r / 2))).toBe(true);
+  it('非方形形状吃满自己的轮廓（几何上限，不能被额外挖掉）', () => {
+    // 掩码面积 / 外接矩形：圆 0.79、六边形 0.75、三角 0.50、星 0.47。
+    // 旧版把圆/六边形/三角形腐蚀成环，面积只有 0.47 / 0.49 / 0.44。
+    const floors: Record<ShapeId, number> = {
+      circle: 0.7,
+      hexagon: 0.65,
+      triangle: 0.42,
+      star: 0.4,
+      square: 1,
+    };
+    for (const shape of SHAPE_IDS) {
+      const fill = countCells(buildMask(shape, 14, 14)) / (14 * 14);
+      expect(fill).toBeGreaterThanOrEqual(floors[shape]);
+    }
+  });
+
+  it('实心化之后高难度档的岔路显著变多（旧版环形走廊约 43 个）', () => {
+    const circle = generateMaze(
+      { cols: 24, rows: 24, braid: 0, branchiness: 1, shape: 'circle' },
+      mulberry32(5),
+    );
+    // 旧版圆形 24×24 环形走廊只有 180 格、43 个岔路口
+    expect(mazeCellCount(circle)).toBeGreaterThan(400);
+    expect(junctionCount(circle)).toBeGreaterThan(90);
   });
 
   it('掩码之外的格子四面皆墙，无法进入', () => {

@@ -1,7 +1,7 @@
 /**
  * 难度模型。
  *
- * 六个维度相互正交，覆盖 6-10 岁的完整跨度：
+ * 六个维度相互正交，前三档照顾 6-10 岁，最后一档按成年人难度配置：
  *   1. 形状      —— 圆形/六边形/三角/星形，换的是空间感而不是尺寸
  *   2. 尺寸      —— 最直观的难度信号
  *   3. 岔路      —— 越大岔路越多、决策点越多，**越大越难**（与 braid 相反）
@@ -101,13 +101,16 @@ export const PRESETS: readonly Difficulty[] = [
   },
   {
     id: 'hard',
+    // 这一档按「成年人难度」配置，不再迁就儿童：
+    // 尺寸顶到网格上限、岔路拉满、环路清零（每个死胡同都是真惩罚）、
+    // 没有脚印也没有提示箭头。目标是「一眼看上去就不像能一次走通」。
     name: '挑战',
-    ageHint: '9-10 岁：星形迷宫，岔路最密、无脚印，靠记忆和规划',
+    ageHint: '成人难度：星形大迷宫，岔路最密、死路最多，没有脚印和提示箭头',
     shape: 'star',
-    cols: 18,
-    rows: 18,
-    branchiness: 0.85,
-    braid: 0.15,
+    cols: 24,
+    rows: 24,
+    branchiness: 1,
+    braid: 0,
     footprint: 'none',
     footprintFadeSec: 0,
     timed: true,
@@ -118,6 +121,41 @@ export const PRESETS: readonly Difficulty[] = [
 
 export function presetById(id: string): Difficulty {
   return PRESETS.find((p) => p.id === id) ?? (PRESETS[0] as Difficulty);
+}
+
+/**
+ * 把家长指定的形状叠加到任意难度上。
+ *
+ * 形状是与难度档位**正交**的维度：家长在「难度设置」里选了形状之后，
+ * 换到哪个档位都该保持这个形状（档位自带的形状只是默认值）。
+ * shape 为 null 表示「跟随档位」，此时原样返回，不改对象引用。
+ */
+export function withShape(diff: Difficulty, shape: ShapeId | null): Difficulty {
+  if (shape === null || shape === diff.shape) return diff;
+  return { ...diff, shape };
+}
+
+/**
+ * 把家长指定的星星数量叠加到任意难度上。
+ *
+ * 星星数与形状一样是跨难度的：它只决定「奖励放几个」，
+ * 不参与迷宫结构，因此家长调一次就该对每一档都生效。
+ * stars 为 null 表示「跟随档位」（入门/简单没有星星，中等 3 颗，挑战 5 颗）。
+ */
+export function withStars(diff: Difficulty, stars: number | null): Difficulty {
+  if (stars === null || stars === diff.stars) return diff;
+  return { ...diff, stars };
+}
+
+/**
+ * 把 localStorage 里的星星覆盖值收敛到合法范围。
+ *
+ * 非法值（缺字段、被人手改成字符串、超出上限）一律返回 null 而不是 0：
+ * null 是「跟随档位」，0 是家长明确要的「不要星星」，两者不能混。
+ */
+export function normalizeStarsOverride(value: unknown): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+  return clampInt(value, LIMITS.minStars, LIMITS.maxStars);
 }
 
 /** 家长自定义配置的存储键。 */
@@ -142,7 +180,11 @@ export function clampCustom(input: Partial<Difficulty>): Difficulty {
     footprint: input.footprint ?? base.footprint,
     footprintFadeSec: clampInt(input.footprintFadeSec ?? base.footprintFadeSec, 1, 20),
     timed: input.timed ?? base.timed,
-    stars: Math.min(stars, Math.max(0, Math.floor((cols * rows) / 12))),
+    // 只按「滑块的上限」收敛，不再按格子面积二次打折。
+    // 旧实现会把它压到 floor(cols*rows/12)：家长在小迷宫上把星星拉到 8 颗，
+    // 开局却只有 3 颗 —— 正是「设置后没生效」的来源之一。
+    // 真正的容量约束在 placeCollectibles：必经之路放不下、死路也不够多时自然少放。
+    stars,
     hintDelayMs: input.hintDelayMs === undefined ? base.hintDelayMs : input.hintDelayMs,
   };
 }
