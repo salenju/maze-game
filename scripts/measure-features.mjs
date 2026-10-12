@@ -4,6 +4,10 @@
  * 这两项此前只做过单元测试，从未在真实浏览器里端到端验证过。
  * 尤其要确认「星星必须能真的被吃到」——若收集判定有偏差，
  * 孩子会看到星星明明碰到了却不消失，这是最典型的挫败来源。
+ *
+ * 星星现在分两种：铺在必经之路上的主星，以及藏在死路尽头的诱饵星
+ * （家长要求「放一些在死路里迷惑用户」）。因此这里同时锁住两件事：
+ * 正路上的星星必须真的能吃到，而诱饵必须走完正路也吃不到。
  */
 
 import { chromium, devices } from 'playwright';
@@ -86,7 +90,7 @@ async function dragAlong(page, cdp, cells, holdMs = 220) {
   const hudBefore = await page.textContent('#hud-stars');
   check('HUD 显示星星进度 0/3', hudBefore.includes('0/3'), hudBefore);
 
-  // 星星摆在解路径上，沿解路径走就应吃到
+  // 大部分星星摆在解路径上，沿解路径走就应吃到
   const sol = await page.evaluate(() => window.__mazeDebug.solution());
   const cdp = await ctx.newCDPSession(page);
   await dragAlong(page, cdp, sol, 200);
@@ -96,6 +100,12 @@ async function dragAlong(page, cdp, cells, holdMs = 220) {
   // 断言已收集数上升（而不是去猜剩余数）
   check('沿解路径行走能吃到星星（不应出现碰到却不消失）',
     collected.starsCollected >= 1,
+    `已收集 ${collected.starsCollected}/${collected.starsTotal} 颗`);
+
+  // 用户要求「适当放一些在死路里迷惑用户」：这部分必须走完正路也吃不到，
+  // 否则诱饵就白放了（放在必经之路上的星星是必然吃到的）。
+  check('约三分之一藏在死路里（走完正路不会全拿到）',
+    collected.starsCollected < collected.starsTotal,
     `已收集 ${collected.starsCollected}/${collected.starsTotal} 颗`);
 
   const hudAfter = await page.textContent('#hud-stars');
