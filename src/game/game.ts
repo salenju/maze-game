@@ -14,11 +14,21 @@
 import {
   canMove,
   cellIndex,
+  DX,
+  DY,
+  E,
   generateMaze,
   inMaze,
+  N,
+  pingPongIndex,
   placeCollectibles,
+  placeFakeExits,
+  placeGuards,
+  S,
   solve,
+  W,
   type Cell,
+  type Dir,
   type Maze,
 } from '../core/maze';
 import { mulberry32, randomSeed, type Rng } from '../core/rng';
@@ -53,7 +63,20 @@ const MOVE_BURST_CELLS = 5;
  */
 const MOVE_BURST_RATIO = 0.5;
 
-export type Phase = 'playing' | 'paused' | 'won';
+/**
+ * 巡逻怪的移动速度（格/秒）。刻意明显慢于小球的 6.5：
+ * 怪是「会动的障碍」，不是「追着人跑的敌人」—— 孩子要能算准时机钻过去，
+ * 而不是被一只跑得比自己快的怪反复按在起点上。
+ */
+const GUARD_SPEED_CELLS_PER_SEC = 2.2;
+
+/** 被抓后回到起点时的无敌时间（秒）。避免刚复活就被同一只怪再抓一次。 */
+const CAUGHT_GRACE_SEC = 2;
+
+/** 抓到时红闪的持续时间（秒），纯视觉反馈。 */
+const CAUGHT_FLASH_SEC = 0.6;
+
+export type Phase = 'playing' | 'paused' | 'won' | 'lost';
 
 export interface Footprint {
   index: number;
@@ -69,10 +92,26 @@ export interface WinResult {
   usedHint: boolean;
 }
 
+/** 超时失败的结果。与 WinResult 分开，避免「失败但字段名叫 win」这种自相矛盾。 */
+export interface LoseResult {
+  seconds: number;
+  timeLimit: number;
+  stars: number;
+  totalStars: number;
+  /** 是否已经撞到过假出口 */
+  foundFakeExits: number;
+}
+
 export interface GameEvents {
   onStar?(collected: number, total: number): void;
   onBump?(): void;
   onWin?(result: WinResult): void;
+  /** 走到假出口上（不是通关，只是一次「此路不通」的反馈） */
+  onFakeExit?(index: number): void;
+  /** 被巡逻怪碰到，已送回起点 */
+  onCaught?(): void;
+  /** 限时耗尽 */
+  onLose?(result: LoseResult): void;
 }
 
 export class Game {
@@ -86,6 +125,33 @@ export class Game {
   private readonly events: GameEvents;
   private readonly rng: Rng;
   private readonly starTaken: boolean[];
+
+  /**
+   * 假出口。它们与真出口长得一模一样，踩上去只会得到「此路不通」的反馈，
+   * 绝不触发通关 —— 真正的判定在 checkWin，永远只认真出口。
+   */
+  readonly fakeExitCells: readonly Cell[];
+  private readonly fakeExitFound: boolean[];
+
+  /** 巡逻怪的路线（格序列）。怪沿它在两端之间往返。 */
+  private readonly guardPaths: readonly Cell[][];
+  /** 每只怪沿路线走过的「节点单位」长度，支持浮点插值 */
+  private readonly guardU: number[];
+  /** 每只怪当前的插值坐标（格坐标，浮点） */
+  private readonly guardPos: { x: number; y: number }[] = [];
+
+  /** 被怪抓到后的无敌剩余时间 */
+  private caughtGrace = 0;
+  /** 抓到时红闪的剩余强度 0..1，供渲染层做反馈 */
+  private caughtFlash = 0;
+
+  /**
+   * 视野可见集（沿走廊 BFS，1=可见）。
+   * null 表示「本局不做视野限制」，此时一切都可见。
+   */
+  private visible: Uint8Array | null = null;
+  /** 上面那张可见集是以哪一格为中心算出来的，用于避免每帧重算 */
+  private visibleCenter: Cell | null = null;
 
   /** 小人位置（格坐标，浮点表示格与格之间的插值） */
   private px: number;
@@ -132,6 +198,18 @@ export class Game {
       },
       this.rng,
     );
+    // 顺序刻意固定：假出口（不用 rng）→ 巡逻怪 → 星星。
+    // 数量为 0 时这两个函数在碰随机数之前就返回了，
+    // 因此「全图可见、无假门、无怪」的既有档位拿到的地图与从前逐字节相同。
+    this.fakeExitCells = placeFakeExits(this.maze, difficulty.fakeExits);
+    this.fakeExitFound = this.fakeExitCells.map(() => false);
+    this.guardPaths = placeGuards(this.maze, difficulty.guards, this.rng);
+    // 多只怪从路线的不同位置起步，一开局不会全叠在一起
+    this.guardU = this.guardPaths.map((_, i) => i * 2.5);
+    for (const path of this.guardPaths) {
+      const head = path[0] as Cell;
+      this.guardPos.push({ x: head.x, y: head.y });
+    }
     this.starCells = placeCollectibles(this.maze, difficulty.stars);
     this.starTaken = this.starCells.map(() => false);
     this.solution = solve(this.maze);
@@ -140,6 +218,7 @@ export class Game {
     this.px = this.maze.start.x;
     this.py = this.maze.start.y;
     this.markVisited(this.px, this.py);
+    this.refreshVisibility();
   }
 
   static newSeed(): number {
@@ -152,6 +231,55 @@ export class Game {
 
   get seconds(): number {
     return this.elapsed;
+  }
+
+  /** 剩余时间（秒）。不限时时为 null，调用方据此决定 HUD 显示什么。 */
+  get timeLeft(): number | null {
+    const limit = this.difficulty.timeLimitSec;
+    if (limit === null) return null;
+    return Math.max(0, limit - this.elapsed);
+  }
+
+  /** 本局是否开视野限制。null = 全图可见。 */
+  get viewRadius(): number | null {
+    return this.difficulty.viewRadius;
+  }
+
+  /** 被怪抓到时红闪的剩余强度 0..1（渲染层用）。 */
+  get caughtFlashLevel(): number {
+    return this.caughtFlash;
+  }
+
+  /** 是否处于被抓后的无敌时间（渲染层用它把小球画成闪烁状态）。 */
+  get isGracePeriod(): boolean {
+    return this.caughtGrace > 0;
+  }
+
+  /** 某格当前是否在视野内。不做视野限制时恒为 true。 */
+  isVisibleCell(x: number, y: number): boolean {
+    const vis = this.visible;
+    if (!vis) return true;
+    if (!inMaze(this.maze, x, y)) return false;
+    return vis[cellIndex(this.maze, x, y)] === 1;
+  }
+
+  /** 某格是否走过。视野限制下「走过」的格子会留在记忆里，只是变暗。 */
+  hasVisitedCell(x: number, y: number): boolean {
+    return this.visitedStamp.has(cellIndex(this.maze, x, y));
+  }
+
+  /** 该假出口是否已经被识破（渲染层据此把它灰化打叉）。 */
+  isFakeExitFound(i: number): boolean {
+    return this.fakeExitFound[i] === true;
+  }
+
+  get foundFakeExits(): number {
+    return this.fakeExitFound.filter(Boolean).length;
+  }
+
+  /** 巡逻怪当前的位置（格坐标，浮点）。渲染层直接画。 */
+  guardPositions(): readonly { x: number; y: number }[] {
+    return this.guardPos;
   }
 
   get collected(): number {
@@ -288,6 +416,25 @@ export class Game {
 
     this.elapsed += dt;
     if (this.bumpCooldown > 0) this.bumpCooldown = Math.max(0, this.bumpCooldown - dt);
+    if (this.caughtGrace > 0) this.caughtGrace = Math.max(0, this.caughtGrace - dt);
+    if (this.caughtFlash > 0) {
+      this.caughtFlash = Math.max(0, this.caughtFlash - dt / CAUGHT_FLASH_SEC);
+    }
+
+    // 限时判定放在推进之前：宁可让孩子在最后一帧被「时间到」拦下，
+    // 也不要出现「一帧里既通关又超时」的两种结算同时触发。
+    const limit = this.difficulty.timeLimitSec;
+    if (limit !== null && this.elapsed >= limit) {
+      this.phase = 'lost';
+      this.events.onLose?.({
+        seconds: this.elapsed,
+        timeLimit: limit,
+        stars: this.starsCollected,
+        totalStars: this.totalStars,
+        foundFakeExits: this.foundFakeExits,
+      });
+      return;
+    }
 
     const hintDelay = this.difficulty.hintDelayMs;
     if (hintDelay !== null && !this.hintVisible) {
@@ -297,9 +444,142 @@ export class Game {
       }
     }
 
+    this.moveGuards(dt);
     this.advance(dt);
+    this.refreshVisibility();
     this.collectStars();
+    this.checkFakeExits();
+    // 通关判定排在「被抓」之前：小球已经站在出口上就该赢，
+    // 不该因为旁边恰好有只怪路过而被抹掉这一局的胜利。
     this.checkWin();
+    this.checkCaught();
+  }
+
+  /**
+   * 让巡逻怪沿各自的路线往返。
+   *
+   * 位置用「沿路线走过的节点单位数 u」表示，真实下标由 pingPongIndex 折返出来，
+   * 再在相邻两格之间线性插值 —— 这样怪是平滑滑行而不是一格一格跳。
+   */
+  private moveGuards(dt: number): void {
+    for (let i = 0; i < this.guardPaths.length; i++) {
+      const path = this.guardPaths[i] as Cell[];
+      if (path.length < 2) continue;
+
+      this.guardU[i] = (this.guardU[i] ?? 0) + GUARD_SPEED_CELLS_PER_SEC * dt;
+      const k = pingPongIndex(this.guardU[i] as number, path.length);
+      const a = Math.min(path.length - 2, Math.floor(k));
+      const f = k - a;
+      const from = path[a] as Cell;
+      const to = path[a + 1] as Cell;
+      const pos = this.guardPos[i];
+      if (!pos) continue;
+      pos.x = from.x + (to.x - from.x) * f;
+      pos.y = from.y + (to.y - from.y) * f;
+    }
+  }
+
+  /**
+   * 重算视野可见集。
+   *
+   * 用「沿走廊的 BFS 步数」而不是欧氏半径：后者能隔着墙看见隔壁走廊，
+   * 在岔路密集的迷宫里等于白送一半答案。BFS 计步连拐角都看不见，
+   * 孩子必须真的走过去才知道那边有什么 —— 这才是迷雾的意义。
+   *
+   * 只在小球所在的整数格变化时重算，每帧重算没有意义（同一格结果必然相同）。
+   */
+  private refreshVisibility(): void {
+    const radius = this.difficulty.viewRadius;
+    if (radius === null) {
+      this.visible = null;
+      return;
+    }
+
+    const cell = this.playerCell;
+    if (this.visibleCenter && this.visibleCenter.x === cell.x && this.visibleCenter.y === cell.y) {
+      return;
+    }
+    this.visibleCenter = { x: cell.x, y: cell.y };
+
+    const total = this.maze.cols * this.maze.rows;
+    const vis = new Uint8Array(total);
+    const dist = new Int16Array(total).fill(-1);
+    const start = cellIndex(this.maze, cell.x, cell.y);
+    vis[start] = 1;
+    dist[start] = 0;
+
+    const queue: number[] = [start];
+    for (let head = 0; head < queue.length; head++) {
+      const cur = queue[head] as number;
+      const d = dist[cur] as number;
+      if (d >= radius) continue;
+      const cx = cur % this.maze.cols;
+      const cy = (cur - cx) / this.maze.cols;
+      for (const dir of [N, E, S, W] as Dir[]) {
+        if (!canMove(this.maze, cx, cy, dir)) continue;
+        const nx = cx + (DX[dir] ?? 0);
+        const ny = cy + (DY[dir] ?? 0);
+        const ni = cellIndex(this.maze, nx, ny);
+        if (dist[ni] !== -1) continue;
+        dist[ni] = d + 1;
+        vis[ni] = 1;
+        queue.push(ni);
+      }
+    }
+    this.visible = vis;
+  }
+
+  /**
+   * 踩到假出口。
+   *
+   * 刻意**不惩罚**（不送回起点、不扣时间）：假门只是「此路不通」，
+   * 真正让它有代价的是限时 —— 白跑一趟就烧掉了时间。
+   * 一旦识破就永久标记，渲染层会把它灰化打叉，孩子下次不用再试。
+   */
+  private checkFakeExits(): void {
+    for (let i = 0; i < this.fakeExitCells.length; i++) {
+      if (this.fakeExitFound[i] === true) continue;
+      const f = this.fakeExitCells[i] as Cell;
+      // 容差与吃星星一致（半格）：孩子是「滑过」这一格的，不会精确停在格心，
+      // 容差收紧到 0.4 会出现「明明走过去了却没反应」。
+      if (Math.abs(this.px - f.x) > 0.5 || Math.abs(this.py - f.y) > 0.5) continue;
+      this.fakeExitFound[i] = true;
+      this.events.onFakeExit?.(i);
+    }
+  }
+
+  /** 撞上巡逻怪：红闪 + 送回起点，已收集的星星保留。 */
+  private checkCaught(): void {
+    // 本帧已经通关时就不要再抓人了：checkWin 排在前面，
+    // 若此刻仍执行抓捕，小球会被送回起点、并留下一个再也衰减不掉的红色闪光
+    // （update 在结算后不再被调用），结算页背后会一直透出红光。
+    if (this.phase !== 'playing') return;
+    if (this.caughtGrace > 0) return;
+
+    for (const p of this.guardPos) {
+      const dx = p.x - this.px;
+      const dy = p.y - this.py;
+      if (dx * dx + dy * dy > 0.36) continue; // 0.6 格以内算撞上
+      this.sendBackToStart();
+      return;
+    }
+  }
+
+  private sendBackToStart(): void {
+    this.px = this.maze.start.x;
+    this.py = this.maze.start.y;
+    this.path = [];
+    this.targetCell = null;
+    this.pointerCell = null;
+    this.pointerMoved = false;
+    this.moveBudget = 0;
+    this.caughtGrace = CAUGHT_GRACE_SEC;
+    this.caughtFlash = 1;
+    // 被送回去不算「卡住」，把提示计时的基准也刷新一下
+    this.lastProgressAt = this.elapsed;
+    this.hintVisible = false;
+    this.refreshVisibility();
+    this.events.onCaught?.();
   }
 
   private advance(dt: number): void {

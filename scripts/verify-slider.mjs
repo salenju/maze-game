@@ -64,7 +64,7 @@ await page.click('#btn-difficulty');
 await page.waitForTimeout(500);
 
 // 先选中「自定义」，让滑块的改动真正生效
-await page.locator('.diff-item').nth(4).click();
+await page.locator('[data-diff-id="custom"]').click();
 await page.waitForTimeout(300);
 
 // 按 data-field 定位：以前用 first()/nth() 依赖滑块顺序，
@@ -141,7 +141,7 @@ await page.click('#btn-settings-ok').catch(() => {});
 await page.goto(BASE, { waitUntil: 'domcontentloaded' });
 await page.click('#btn-difficulty');
 await page.waitForTimeout(450);
-await page.locator('.diff-item').nth(4).click();
+await page.locator('[data-diff-id="custom"]').click();
 await page.waitForTimeout(300);
 
 const field = (name) => page.locator(`#custom-panel input[data-field="${name}"]`);

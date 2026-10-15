@@ -269,7 +269,11 @@ async function runChromium(browser) {
   await page.waitForTimeout(400);
   check('难度页面出现', await page.isVisible('#screen-difficulty'));
   const diffCount = await page.locator('.diff-item').count();
-  check('难度列表含 4 个预设 + 1 个自定义', diffCount === 5, `count=${diffCount}`);
+  // 5 个预设（入门/简单/中等/挑战/大师）+ 1 个自定义。
+  // 这个数字是刻意写死的：新增档位时必须同步更新脚本，而不是让它悄悄放行。
+  check('难度列表含 5 个预设 + 1 个自定义', diffCount === 6, `count=${diffCount}`);
+  const hasMaster = await page.locator('[data-diff-id="master"]').count();
+  check('难度列表里有「大师」档', hasMaster === 1, `master=${hasMaster}`);
   const sliderCount = await page.locator('#custom-panel input[type=range]').count();
   check('家长自定义面板有滑块', sliderCount >= 5, `sliders=${sliderCount}`);
   await page.screenshot({ path: 'artifacts/05-difficulty.png', fullPage: false });

@@ -1,7 +1,7 @@
 {
   "name": "maze-game",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "description": "为 6-10 岁儿童设计的触控笔迷宫游戏（PWA）",
   "scripts": {

@@ -27,6 +27,29 @@ const COLORS = {
   start: '#60a5fa',
   hint: '#ff8fab',
   trail: 'rgba(122, 162, 255, 0.45)',
+  /** 巡逻怪：偏红的橙色，和黄色小球拉开距离 */
+  guard: '#f2544b',
+  /** 已识破的假出口：冷灰，明确「这里不是门」 */
+  fakeFound: '#8896b3',
+  /** 被抓时的红闪 */
+  caught: '#ef4444',
+} as const;
+
+/**
+ * 迷雾的两个暗度。
+ *
+ * seen 只是压暗，走廊与墙仍然看得清 —— 那就是「记忆」。
+ * 两者必须拉开足够差距：若把走过的地方也压成全黑，
+ * 孩子会连自己刚才是怎么拐进来的都想不起来，那不是难，是耍人。
+ *
+ * unknown **必须完全不透明**（不能用 0.97 这样的高透明度）。
+ * 这是一次实测踩到的坑：墙带发光（shadowBlur），即使是 3% 的透光，
+ * 亮白的墙线也会在深底上显出整张迷宫的轮廓 —— 截图里一眼就能描出全图，
+ * 迷雾等于没做。只要它有一点透光，孩子就能「读」出没去过的地方。
+ */
+const FOG = {
+  seen: 'rgba(8, 13, 26, 0.6)',
+  unknown: '#050912',
 } as const;
 
 export interface RenderOptions {
@@ -133,11 +156,23 @@ export class Renderer {
     if (opts.highlightCorridors) this.drawCorridors(maze, c, ox, oy);
     this.drawFootprints(game, opts, c, ox, oy);
     this.drawStartAndExit(maze, game, c, ox, oy);
+    this.drawFakeExits(game, c, ox, oy);
     this.drawStars(game, c, ox, oy);
-    if (opts.targetCell) this.drawTarget(opts.targetCell, c, ox, oy);
     if (game.showHint) this.drawHint(game, c, ox, oy);
     this.drawWalls(maze, c, ox, oy);
+
+    // ── 迷雾之下、永远可见的一层 ──
+    // 顺序是刻意的：迷雾压住地板/墙/星星/门（于是「没走过的地方真的看不见」），
+    // 但指针落点、怪、小球必须画在迷雾之后 ——
+    //   · 指针落点：那是笔尖的位置，笔就在孩子手上，藏起来只会让人以为笔坏了；
+    //   · 巡逻怪：**刻意不受迷雾遮挡**。看不见的怪不是难度，是随机死亡，
+    //     孩子会归因成「游戏在坑我」而不是「我算错了时机」；
+    //   · 小球：当前位置，任何时候都得看得见。
+    this.drawFog(game, c, ox, oy);
+    if (opts.targetCell) this.drawTarget(opts.targetCell, c, ox, oy);
+    this.drawGuards(game, c, ox, oy);
     this.drawPlayer(game, c, ox, oy);
+    this.drawCaughtFlash(game);
   }
 
   /**
@@ -239,19 +274,167 @@ export class Renderer {
 
     // 出口：脉冲动画吸引注意（孩子需要知道目标在哪）
     const pulse = 0.72 + 0.28 * Math.sin(game.seconds * 3.2);
+    this.drawDoor(maze.exit.x, maze.exit.y, c, ox, oy, 0.35 + 0.3 * pulse);
+  }
+
+  /**
+   * 一扇「门」的画法：绿底 + 拱门标记。
+   *
+   * 抽出来是因为真出口与假出口**必须长得一模一样**，共用同一段代码是
+   * 唯一能保证这一点的做法 —— 两份各画一遍，迟早会因为某次改动画出差别，
+   * 而假门一旦能被一眼认出，整个机制就失效了。
+   */
+  private drawDoor(
+    cellX: number,
+    cellY: number,
+    c: number,
+    ox: number,
+    oy: number,
+    alpha: number,
+  ): void {
+    const ctx = this.ctx;
+    const ex = ox + cellX * c;
+    const ey = oy + cellY * c;
+
     ctx.save();
-    ctx.globalAlpha = 0.35 + 0.3 * pulse;
+    ctx.globalAlpha = alpha;
     ctx.fillStyle = COLORS.exit;
-    const ex = ox + maze.exit.x * c;
-    const ey = oy + maze.exit.y * c;
     roundRect(ctx, ex + c * 0.1, ey + c * 0.1, c * 0.8, c * 0.8, c * 0.2);
     ctx.fill();
 
-    ctx.globalAlpha = 0.95;
+    ctx.globalAlpha = Math.min(1, alpha + 0.35);
     ctx.fillStyle = COLORS.exitDim;
     // 画成「拱门/旗杆」而不是实心三角：
     // 实心三角在绿色圆角底上会读成播放按钮，孩子会去点它。
     drawGoalMarker(ctx, ex + c * 0.5, ey + c * 0.5, c * 0.5);
+    ctx.restore();
+  }
+
+  /**
+   * 假出口。
+   *
+   * 未识破时与真出口完全一致（同一段 drawDoor、同样的脉冲）—— 这是本机制
+   * 唯一成立的前提。孩子必须在「真的走到跟前」之前无法分辨，
+   * 而每次试错都要花掉限时里的时间，代价就是这么产生的。
+   *
+   * 踩过一次就永久灰化并打叉：反复往同一个坑里跳不叫难度，叫折磨。
+   */
+  private drawFakeExits(game: Game, c: number, ox: number, oy: number): void {
+    const fakes = game.fakeExitCells;
+    if (fakes.length === 0) return;
+
+    const ctx = this.ctx;
+    const pulse = 0.72 + 0.28 * Math.sin(game.seconds * 3.2);
+
+    for (let i = 0; i < fakes.length; i++) {
+      const cell = fakes[i] as Cell;
+      if (!game.isFakeExitFound(i)) {
+        this.drawDoor(cell.x, cell.y, c, ox, oy, 0.35 + 0.3 * pulse);
+        continue;
+      }
+
+      const x = ox + cell.x * c;
+      const y = oy + cell.y * c;
+      ctx.save();
+      ctx.globalAlpha = 0.55;
+      ctx.fillStyle = COLORS.floor;
+      roundRect(ctx, x + c * 0.1, y + c * 0.1, c * 0.8, c * 0.8, c * 0.2);
+      ctx.fill();
+
+      ctx.globalAlpha = 0.8;
+      ctx.strokeStyle = COLORS.fakeFound;
+      ctx.lineWidth = Math.max(2, c * 0.12);
+      ctx.lineCap = 'round';
+      const p = c * 0.26;
+      ctx.beginPath();
+      ctx.moveTo(x + c * 0.5 - p, y + c * 0.5 - p);
+      ctx.lineTo(x + c * 0.5 + p, y + c * 0.5 + p);
+      ctx.moveTo(x + c * 0.5 + p, y + c * 0.5 - p);
+      ctx.lineTo(x + c * 0.5 - p, y + c * 0.5 + p);
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  /**
+   * 视野迷雾。
+   *
+   * 只画「看不见」的格子，按是否走过分成两档暗度：
+   *   没去过 → 几乎全黑；走过 → 压暗一档，走廊与墙依然可辨（即「记忆」）。
+   * 未知格额外向四周多铺 0.5px，避免相邻矩形之间露出细细的亮缝。
+   */
+  private drawFog(game: Game, c: number, ox: number, oy: number): void {
+    if (game.viewRadius === null) return;
+
+    const ctx = this.ctx;
+    const maze = game.maze;
+    const bleed = 0.5;
+
+    ctx.save();
+    for (let y = 0; y < maze.rows; y++) {
+      for (let x = 0; x < maze.cols; x++) {
+        if (game.isVisibleCell(x, y)) continue;
+        ctx.fillStyle = game.hasVisitedCell(x, y) ? FOG.seen : FOG.unknown;
+        ctx.fillRect(ox + x * c - bleed, oy + y * c - bleed, c + bleed * 2, c + bleed * 2);
+      }
+    }
+    ctx.restore();
+  }
+
+  /**
+   * 巡逻怪。**画在迷雾之后**，因此永远可见。
+   *
+   * 这是刻意的：看不见的怪不是难度而是随机死亡，孩子会归因成「游戏坑我」。
+   * 反过来，「看得见怪、看不见路」依旧极难，而且失败时孩子能明确说出
+   * 「我不该在那个路口犹豫那么久」—— 这才是可学习的难度。
+   */
+  private drawGuards(game: Game, c: number, ox: number, oy: number): void {
+    const positions = game.guardPositions();
+    if (positions.length === 0) return;
+
+    const ctx = this.ctx;
+    const bob = Math.sin(this.starPhase * 4) * c * 0.03;
+
+    for (const p of positions) {
+      const cx = ox + (p.x + 0.5) * c;
+      const cy = oy + (p.y + 0.5) * c + bob;
+      const r = c * 0.28;
+
+      ctx.save();
+      ctx.shadowColor = COLORS.guard;
+      ctx.shadowBlur = c * 0.5;
+      ctx.fillStyle = COLORS.guard;
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      ctx.fill();
+
+      // 两只上挑的斜眼：比圆点更像在瞪人，孩子一眼就知道「这个不能碰」
+      ctx.shadowBlur = 0;
+      ctx.strokeStyle = '#2a0f12';
+      ctx.lineWidth = Math.max(1.5, c * 0.06);
+      ctx.lineCap = 'round';
+      const eo = r * 0.4;
+      const el = r * 0.36;
+      ctx.beginPath();
+      ctx.moveTo(cx - eo - el * 0.5, cy - r * 0.38);
+      ctx.lineTo(cx - eo + el * 0.5, cy - r * 0.1);
+      ctx.moveTo(cx + eo - el * 0.5, cy - r * 0.1);
+      ctx.lineTo(cx + eo + el * 0.5, cy - r * 0.38);
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  /** 被抓时的一次红闪，给「被送回起点」一个明确的因果解释。 */
+  private drawCaughtFlash(game: Game): void {
+    const level = game.caughtFlashLevel;
+    if (level <= 0) return;
+
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.globalAlpha = level * 0.42;
+    ctx.fillStyle = COLORS.caught;
+    ctx.fillRect(0, 0, this.cssWidth, this.cssHeight);
     ctx.restore();
   }
 
@@ -368,6 +551,11 @@ export class Renderer {
     const r = c * 0.3;
 
     ctx.save();
+    // 刚被抓回起点时闪烁：明确告诉孩子「现在暂时碰不到怪」，
+    // 否则他会以为游戏卡住了或者怪还在原地等着他
+    if (game.isGracePeriod) {
+      ctx.globalAlpha = 0.35 + 0.45 * Math.abs(Math.sin(this.starPhase * 12));
+    }
     // 外发光 + 白圈：在深色底和高亮墙上都能看清，平板上尤其重要
     ctx.shadowColor = COLORS.player;
     ctx.shadowBlur = c * 0.6;

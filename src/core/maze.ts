@@ -613,3 +613,175 @@ export function placeCollectibles(maze: Maze, count: number): Cell[] {
   }
   return result;
 }
+
+/** 从 from 出发的 BFS 距离表；不可达为 -1。 */
+function bfsDistances(maze: Maze, from: number): Int32Array {
+  const dist = new Int32Array(maze.cols * maze.rows).fill(-1);
+  dist[from] = 0;
+  const queue: number[] = [from];
+  for (let head = 0; head < queue.length; head++) {
+    const cur = queue[head] as number;
+    const cx = cur % maze.cols;
+    const cy = (cur - cx) / maze.cols;
+    const d = dist[cur] as number;
+    for (const dir of [N, E, S, W] as Dir[]) {
+      if (!canMove(maze, cx, cy, dir)) continue;
+      const nx = cx + (DX[dir] ?? 0);
+      const ny = cy + (DY[dir] ?? 0);
+      const ni = cellIndex(maze, nx, ny);
+      if (dist[ni] !== -1) continue;
+      dist[ni] = d + 1;
+      queue.push(ni);
+    }
+  }
+  return dist;
+}
+
+/**
+ * 假出口与真出口的最小距离，占迷宫「图上直径」的比例。
+ *
+ * 为什么要有这个下限：紧挨着真出口的假门不产生任何迷惑 ——
+ * 孩子走到那儿时真门已经在视野里了。假门必须真的在「另一个方向」。
+ */
+const FAKE_EXIT_DISTANCE_RATIO = 0.35;
+
+/**
+ * 布置假出口。
+ *
+ * 三条硬规则（每条都对应一种「不公平」）：
+ *  1. **绝不放在解路径上**。正路上摆一个假门，等于孩子明明走在唯一正确的
+ *     方向上却被弹回来，那是「游戏坏了」而不是「难」。
+ *  2. **离真出口足够远**（图上距离 ≥ 直径的 35%）。否则假门就在真门旁边，
+ *     一眼就能分辨，毫无迷惑价值。
+ *  3. **优先挑死路尽头**，并让假门彼此分开。死路尽头的「门」最像一个目的地；
+ *     挤在一起的话孩子撞一次就顺手排除一片。
+ *
+ * 这里刻意不用随机数：给定迷宫，假门位置就完全确定。
+ * 于是「同一难度 + 同一种子」依旧整局可复现，也不会动到既有档位的随机数序列
+ * （序列一变，README 里实测的岔路/死胡同数字就全对不上了）。
+ */
+export function placeFakeExits(maze: Maze, count: number): Cell[] {
+  if (count <= 0) return [];
+
+  const route = solve(maze);
+  const onRoute = new Set<number>();
+  for (const c of route) onRoute.add(cellIndex(maze, c.x, c.y));
+
+  const distFromExit = bfsDistances(maze, cellIndex(maze, maze.exit.x, maze.exit.y));
+  let diameter = 0;
+  for (const d of distFromExit) {
+    if (d > diameter) diameter = d;
+  }
+  const minDist = Math.max(4, Math.round(diameter * FAKE_EXIT_DISTANCE_RATIO));
+
+  const candidates: { cell: Cell; deadEnd: boolean; dist: number }[] = [];
+  for (let y = 0; y < maze.rows; y++) {
+    for (let x = 0; x < maze.cols; x++) {
+      if (!inMaze(maze, x, y)) continue;
+      if (x === maze.start.x && y === maze.start.y) continue;
+      if (x === maze.exit.x && y === maze.exit.y) continue;
+      const idx = cellIndex(maze, x, y);
+      if (onRoute.has(idx)) continue;
+      const d = distFromExit[idx] as number;
+      if (d < minDist) continue;
+      candidates.push({ cell: { x, y }, deadEnd: openings(maze, x, y).length === 1, dist: d });
+    }
+  }
+
+  // 死路尽头优先 → 离真出口更远优先 → 下标升序兜底（保证同一种子结果稳定）
+  candidates.sort(
+    (a, b) =>
+      Number(b.deadEnd) - Number(a.deadEnd) ||
+      b.dist - a.dist ||
+      cellIndex(maze, a.cell.x, a.cell.y) - cellIndex(maze, b.cell.x, b.cell.y),
+  );
+
+  const MIN_GAP = 3;
+  const picked: Cell[] = [];
+  const farEnough = (cell: Cell) =>
+    picked.every((p) => Math.max(Math.abs(p.x - cell.x), Math.abs(p.y - cell.y)) > MIN_GAP);
+  for (const c of candidates) {
+    if (picked.length >= count) break;
+    if (farEnough(c.cell)) picked.push(c.cell);
+  }
+  // 小迷宫上分散不开就放宽：宁可挨着一点，也不能少放一个假门
+  for (const c of candidates) {
+    if (picked.length >= count) break;
+    if (!picked.some((p) => p.x === c.cell.x && p.y === c.cell.y)) picked.push(c.cell);
+  }
+  return picked;
+}
+
+/**
+ * 巡逻怪的路线。
+ *
+ * 为什么起点必须取在**解路径上**：随机游走如果从角落里出发，
+ * 怪会在孩子根本不会去的死角里来回走，看着有威胁其实挡不住任何事。
+ * 从必经之路上取起点，怪就必然在「孩子一定要经过的地方」附近活动。
+ * 多只怪按比例沿解路径均匀取起点，避免全挤在一起。
+ *
+ * 路线本身是一段不立即回头的随机游走；运行时让怪沿路线往返（乒乓），
+ * 于是它的巡逻是**可预测**的 —— 孩子看两次就能背下路线并算准时机钻过去，
+ * 这才是「动脑」而不是「撞运气」。
+ *
+ * 路线刻意避开起点格与出口格：碰撞后小球会被送回起点，
+ * 若怪正好堵在起点上就会陷入「刚复活又被抓」的死循环。
+ */
+export function placeGuards(maze: Maze, count: number, rng: Rng): Cell[][] {
+  if (count <= 0) return [];
+
+  const route = solve(maze);
+  if (route.length < 3) return [];
+
+  const cellTotal = mazeCellCount(maze);
+  const steps = Math.min(24, Math.max(6, Math.round(cellTotal * 0.06)));
+
+  const lo = Math.max(1, Math.round(route.length * 0.15));
+  const hi = Math.max(lo, route.length - 2);
+
+  const paths: Cell[][] = [];
+  for (let g = 0; g < count; g++) {
+    // 沿解路径均匀取起点：count 只怪各自守一段，不会全堆在同一处
+    const frac = (g + 1) / (count + 1);
+    const idx = Math.min(hi, lo + Math.round((hi - lo) * frac));
+    let cur: Cell = route[idx] as Cell;
+    const path: Cell[] = [{ x: cur.x, y: cur.y }];
+    let prev: Cell | null = null;
+
+    for (let i = 0; i < steps; i++) {
+      const options: Cell[] = [];
+      for (const dir of openings(maze, cur.x, cur.y)) {
+        const nx = cur.x + (DX[dir] ?? 0);
+        const ny = cur.y + (DY[dir] ?? 0);
+        if (prev && nx === prev.x && ny === prev.y) continue; // 不立即原路折返
+        if (nx === maze.start.x && ny === maze.start.y) continue;
+        if (nx === maze.exit.x && ny === maze.exit.y) continue;
+        options.push({ x: nx, y: ny });
+      }
+      if (options.length === 0) break;
+      const next = options[Math.floor(rng() * options.length)] as Cell;
+      path.push(next);
+      prev = cur;
+      cur = next;
+    }
+
+    // 只有一格的路线上怪站着不动，起不到巡逻作用，丢弃
+    if (path.length >= 2) paths.push(path);
+  }
+  return paths;
+}
+
+/**
+ * 怪沿路线往返（乒乓）时，连续位置对应的「浮点节点下标」。
+ *
+ * 把路线当成一条来回走的线段：u 从 0 增到 L-1 再折返到 0，如此循环。
+ * 相比在每个节点上翻转方向标志位，这种表示不会出现「在端点上抖两下」的边界 bug。
+ * 调用方按 floor(u)/frac 在相邻两格之间线性插值即可。
+ */
+export function pingPongIndex(u: number, pathLength: number): number {
+  if (pathLength < 2) return 0;
+  const period = 2 * (pathLength - 1);
+  let x = u % period;
+  if (x < 0) x += period;
+  return x <= pathLength - 1 ? x : period - x;
+}

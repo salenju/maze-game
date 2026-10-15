@@ -105,7 +105,7 @@ async function clearMaze(page, cdp) {
   // 自定义（custom）
   await page.goto(BASE, { waitUntil: 'networkidle' });
   await page.click('#btn-difficulty'); await page.waitForTimeout(400);
-  await page.locator('.diff-item').nth(4).click(); // 自定义
+  await page.locator('[data-diff-id="custom"]').click();
   await page.waitForTimeout(250);
   await page.click('#btn-start'); await page.waitForTimeout(700);
   await clearMaze(page, cdp);

@@ -22,6 +22,7 @@ export type ScreenName =
   | 'difficulty'
   | 'game'
   | 'win'
+  | 'lose'
   | 'pause'
   | 'howto'
   | 'settings'
@@ -37,6 +38,7 @@ export class Screens {
       'difficulty',
       'game',
       'win',
+      'lose',
       'pause',
       'howto',
       'settings',
@@ -103,6 +105,11 @@ export function renderDifficultyList(
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'diff-item';
+    // 稳定的档位 id，供自动化脚本按名字选中。
+    // 以前脚本用 `.diff-item` 的**位置**选（nth(4) = 自定义），
+    // 本次在「挑战」之后插入「大师」档，位置全部后移，会静默地改错档位 ——
+    // 与当初给滑块加 data-field 是同一个理由。
+    button.dataset['diffId'] = diff.id;
     button.setAttribute('aria-pressed', diff.id === selectedId ? 'true' : 'false');
 
     const h3 = document.createElement('h3');
@@ -169,7 +176,8 @@ export function describeDifficulty(diff: Difficulty): string[] {
   const tags: string[] = [];
   tags.push(`${SHAPE_LABELS[diff.shape] ?? SHAPE_LABELS.square}迷宫`);
   tags.push(`${diff.cols}×${diff.rows}`);
-  tags.push(diff.timed ? '有计时' : '不计时');
+  if (diff.timeLimitSec !== null) tags.push(`限时 ${formatTime(diff.timeLimitSec)}`);
+  else tags.push(diff.timed ? '有计时' : '不计时');
 
   const fp: Record<FootprintMode, string> = {
     always: '脚印常显',
@@ -180,6 +188,12 @@ export function describeDifficulty(diff: Difficulty): string[] {
 
   if (diff.stars > 0) tags.push(`${diff.stars} 颗星星`);
   if (diff.hintDelayMs !== null) tags.push('卡住会提示');
+
+  // 「附加机制」单独列出。它们是加难度的新维度，与下面的岔路/环路无关，
+  // 混在一起家长会以为调岔路就能得到（或关掉）迷雾。
+  if (diff.viewRadius !== null) tags.push(`只看清 ${diff.viewRadius} 格`);
+  if (diff.fakeExits > 0) tags.push(`${diff.fakeExits} 个假出口`);
+  if (diff.guards > 0) tags.push(`${diff.guards} 只巡逻怪`);
 
   // 两个参数方向相反，标签分开描述，绝不合成一个「难度」，
   // 否则家长根本分不清该调哪个。
@@ -305,6 +319,66 @@ export function renderCustomPanel(
       checked: snapshot.hintDelayMs !== null,
       hint: '开启后，长时间没有进展会显示指路箭头，避免孩子卡住失去兴趣。',
       onInput: (v) => emit({ hintDelayMs: v ? 20_000 : null }),
+    }),
+    // ── 附加机制 ──
+    // 上面这些参数（尺寸/岔路/环路）在「挑战」档已经全部顶到上限，
+    // 再想加难度只能靠下面这四项。它们各自独立，可以只开一项。
+    toggleField({
+      label: '只看清附近几格（视野迷雾）',
+      checked: snapshot.viewRadius !== null,
+      hint: '开启后只看得见小球附近沿走廊能走到的地方，没去过的区域是黑的。这是提升难度最有效的一项。',
+      onInput: (v) => emit({ viewRadius: v ? 4 : null }),
+    }),
+    sliderField({
+      key: 'viewRadius',
+      label: '能看清的格数',
+      min: LIMITS.minViewRadius,
+      max: LIMITS.maxViewRadius,
+      step: 1,
+      value: snapshot.viewRadius ?? 4,
+      display: (v) => `${v} 格`,
+      hint: '数值越小越难，走岔路与拐角都看不见。只有开启「视野迷雾」时有效。',
+      onInput: (v) => emit({ viewRadius: v }),
+    }),
+    sliderField({
+      key: 'fakeExits',
+      label: '假出口数量',
+      min: 0,
+      max: LIMITS.maxFakeExits,
+      step: 1,
+      value: snapshot.fakeExits,
+      display: (v) => (v === 0 ? '没有假出口' : `${v} 个`),
+      hint: '多放几个长得一模一样的假门，走到跟前才发现过不去。误判要花掉时间，但不会受罚。',
+      onInput: (v) => emit({ fakeExits: v }),
+    }),
+    sliderField({
+      key: 'guards',
+      label: '巡逻怪数量',
+      min: 0,
+      max: LIMITS.maxGuards,
+      step: 1,
+      value: snapshot.guards,
+      display: (v) => (v === 0 ? '没有巡逻怪' : `${v} 只`),
+      hint: '怪会沿固定路线来回走，碰到就被送回起点（星星不会丢）。路线是固定的，看两次就能算准时机。',
+      onInput: (v) => emit({ guards: v }),
+    }),
+    toggleField({
+      label: '限时通关（超时就要重来）',
+      checked: snapshot.timeLimitSec !== null,
+      hint: '开启后倒计时归零即失败。这是唯一会「输」的机制，让走错路真正有代价，建议只在挑战/大师难度下使用。',
+      // 打开限时时顺带把「计时」也打开，否则 HUD 会显示「--:--」而下面却在倒计时
+      onInput: (v) => emit(v ? { timeLimitSec: 300, timed: true } : { timeLimitSec: null }),
+    }),
+    sliderField({
+      key: 'timeLimitSec',
+      label: '限时时长',
+      min: LIMITS.minTimeLimitSec,
+      max: LIMITS.maxTimeLimitSec,
+      step: 30,
+      value: snapshot.timeLimitSec ?? 300,
+      display: (v) => formatTime(v),
+      hint: '只有开启「限时通关」时有效。24×24 大迷宫沿正路走完约 2 分钟，留 4-5 分钟比较合适。',
+      onInput: (v) => emit({ timeLimitSec: v }),
     }),
   );
 }
@@ -689,6 +763,50 @@ export function renderWinPanel(
   if (data.totalStars > 0) rows.push(['星星', `${data.stars} / ${data.totalStars}`]);
   if (data.isBest) rows.push(['新纪录', '这是目前最快的成绩']);
   if (hints.length > 0) rows.push(['小提示', hints.join('、')]);
+
+  statsEl.replaceChildren();
+  for (const [k, v] of rows) {
+    const div = document.createElement('div');
+    const dt = document.createElement('dt');
+    dt.textContent = k;
+    const dd = document.createElement('dd');
+    dd.textContent = v;
+    div.append(dt, dd);
+    statsEl.append(div);
+  }
+}
+
+/**
+ * 失败页（限时耗尽）。
+ *
+ * 与结算页刻意分开而不是复用：一页上同时写「走出迷宫啦」和「时间到」必然是
+ * 自相矛盾的。这里的三件事必须说清 —— 为什么输、收获还是你的、下一步做什么。
+ */
+export interface LosePanelData {
+  timeLimit: number;
+  stars: number;
+  totalStars: number;
+  foundFakeExits: number;
+  explored: number;
+  mazeCells: number;
+}
+
+export function renderLosePanel(
+  titleEl: HTMLElement,
+  leadEl: HTMLElement,
+  statsEl: HTMLElement,
+  data: LosePanelData,
+): void {
+  titleEl.textContent = '时间到啦';
+  leadEl.textContent =
+    `这一局限时 ${formatTime(data.timeLimit)}。` +
+    '「再试一次」还是同一张地图，刚才记住的路和怪的走法都还算数。';
+
+  const rows: [string, string][] = [['已经探索', `${data.explored} / ${data.mazeCells} 格`]];
+  // 没吃到星星就别写「已保留 0 颗」——一行没有信息量的文案只会让人以为出了 bug
+  if (data.stars > 0) rows.push(['星星', `${data.stars} / ${data.totalStars}（已保留）`]);
+  if (data.foundFakeExits > 0) rows.push(['识破假门', `${data.foundFakeExits} 个`]);
+  rows.push(['小提示', '先在起点附近记熟几条岔路，比一路猛冲快得多']);
 
   statsEl.replaceChildren();
   for (const [k, v] of rows) {

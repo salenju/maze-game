@@ -18,9 +18,9 @@ import {
   type Difficulty,
 } from './core/difficulty';
 import type { ShapeId } from './core/shape';
-import { deadEndCount, junctionCount, mazeCellCount } from './core/maze';
+import { deadEndCount, inMaze, junctionCount, mazeCellCount, solve } from './core/maze';
 import { PointerInput, lockViewport, type PointerSample } from './game/input';
-import { Game, type WinResult } from './game/game';
+import { Game, type LoseResult, type WinResult } from './game/game';
 import { Renderer } from './game/renderer';
 import { Audio } from './game/audio';
 import {
@@ -41,6 +41,7 @@ import {
   renderDifficultyList,
   renderHomeStats,
   renderInstallGuide,
+  renderLosePanel,
   renderSettingsPanel,
   renderShapeField,
   renderStarsField,
@@ -194,6 +195,15 @@ class App {
       this.startGame(this.difficulty, this.game?.seed ?? Game.newSeed());
     });
     must('#btn-home').addEventListener('click', () => this.showHome());
+
+    // 失败页：「再试一次」用同一个种子重开 —— 同一张地图、同一批假门、
+    // 同样的怪的路线。孩子刚刚已经用一整局记住了不少东西，
+    // 换成新地图等于把他刚学到的东西全丢掉重新抽一次运气。
+    must('#btn-lose-retry').addEventListener('click', () => {
+      this.audio.play('click');
+      this.startGame(this.difficulty, this.game?.seed ?? Game.newSeed());
+    });
+    must('#btn-lose-home').addEventListener('click', () => this.showHome());
 
     must('#btn-install-ok').addEventListener('click', () => {
       this.progress = { ...this.progress, installHintSeen: true };
@@ -448,13 +458,22 @@ class App {
         this.audio.play('bump');
         this.flashHint('这边是墙，换个方向试试');
       },
+      onFakeExit: () => {
+        this.audio.play('wrong');
+        this.flashHint('这扇绿门是假的，换一条路');
+      },
+      onCaught: () => {
+        this.audio.play('caught');
+        this.flashHint('被巡逻怪碰到了，回到起点重新走');
+      },
       onWin: (result) => this.handleWin(result),
+      onLose: (result) => this.handleLose(result),
     });
 
     // HUD 上把形状也写出来：孩子玩到一半被家长换过形状时，
     // 一行「圆形 7×7」比只有尺寸更能说明这一局是什么。
     must('#hud-diff').textContent = `${diff.name}　${describeSize(diff)}`;
-    must('#hud-time').textContent = diff.timed ? '0:00' : '--:--';
+    this.syncHudTime();
     must('#hud-stars').textContent = this.starsLabel();
 
     // 每局重置底部提示，避免沿用上一局残留的「这边是墙」
@@ -474,6 +493,36 @@ class App {
     const g = this.game;
     if (!g || g.totalStars === 0) return '';
     return `★ ${g.collected}/${g.totalStars}`;
+  }
+
+  /**
+   * 刷新 HUD 上的时间显示。
+   *
+   * 三种模式必须显示不同的东西，混掉任何一种都会让孩子误判局势：
+   *   限时   → 剩余时间，最后 30 秒变红；
+   *   只计时 → 已经用掉的时间；
+   *   不计时 → 「--:--」，明确表示这一局没有时间压力。
+   * 只在文本真的变了才写 DOM：这是每帧调用的热路径。
+   */
+  private syncHudTime(): void {
+    const g = this.game;
+    const timeEl = must('#hud-time');
+    const left = g?.timeLeft ?? null;
+
+    let text: string;
+    let low = false;
+    if (g && left !== null) {
+      text = formatTime(left);
+      low = left <= 30;
+    } else if (g && this.difficulty.timed) {
+      text = formatTime(g.seconds);
+    } else {
+      text = '--:--';
+    }
+
+    if (timeEl.textContent !== text) timeEl.textContent = text;
+    const flag = low ? 'true' : 'false';
+    if (timeEl.dataset['low'] !== flag) timeEl.dataset['low'] = flag;
   }
 
   /**
@@ -556,6 +605,38 @@ class App {
     must<HTMLButtonElement>('#btn-next').hidden = false;
 
     this.screens.show('win');
+  }
+
+  /**
+   * 限时耗尽。
+   *
+   * 刻意不走 handleWin：那一栏统计的是「已经走出迷宫 n 次」，输了就不该记。
+   * 但**已经吃到的星星保留**并计入总收集数 —— 一局四分钟的努力颗粒无收
+   * 会让孩子把失败归因为「白玩了」而不是「下次快一点」。
+   */
+  private handleLose(result: LoseResult): void {
+    const g = this.game;
+    if (!g) return;
+
+    this.audio.play('wrong');
+    this.detachInput();
+    this.stopLoop();
+
+    if (result.stars > 0) {
+      this.progress = { ...this.progress, totalStars: this.progress.totalStars + result.stars };
+      saveProgress(this.progress);
+    }
+
+    renderLosePanel(must('#lose-title'), must('#lose-lead'), must('#lose-stats'), {
+      timeLimit: result.timeLimit,
+      stars: result.stars,
+      totalStars: result.totalStars,
+      foundFakeExits: result.foundFakeExits,
+      explored: g.exploredCount,
+      mazeCells: g.mazeCellCount,
+    });
+
+    this.screens.show('lose');
   }
 
   // ---------- 输入与渲染 ----------
@@ -714,6 +795,19 @@ class App {
     return this.game?.solution.map((c) => ({ x: c.x, y: c.y })) ?? [];
   }
 
+  /**
+   * 从当前位置到任意格的 BFS 路径（格坐标）。
+   *
+   * 与 debugSolution 同样只读。存在的理由：假出口不在解路径上，
+   * 验收脚本要把笔尖带到它跟前，就必须有一条「当前格 → 目标格」的真实路线，
+   * 自己另写一份寻路等于在测试里重新实现一遍被测逻辑。
+   */
+  debugRouteTo(x: number, y: number): { x: number; y: number }[] {
+    const g = this.game;
+    if (!g) return [];
+    return solve(g.maze, g.playerCell, { x, y }).map((c) => ({ x: c.x, y: c.y }));
+  }
+
   /** 把格坐标换算成画布内的屏幕坐标，供脚本把笔尖移到指定格。 */
   debugCellToScreen(x: number, y: number): { x: number; y: number } {
     const rect = this.canvas.getBoundingClientRect();
@@ -781,6 +875,64 @@ class App {
     return next ? { x: next.x, y: next.y } : null;
   }
 
+  /** 指定格当前是否在视野内（自动化验收用；不做视野限制时恒为 true）。 */
+  debugIsVisible(x: number, y: number): boolean {
+    return this.game?.isVisibleCell(x, y) ?? false;
+  }
+
+  /** 指定格是否走过（自动化验收用；用来区分「记忆」与「从未去过」）。 */
+  debugIsVisited(x: number, y: number): boolean {
+    return this.game?.hasVisitedCell(x, y) ?? false;
+  }
+
+  /**
+   * 「附加机制」的运行状态（自动化验收用）。
+   *
+   * 视野、假门、巡逻怪、限时这四项都是**只能在真实浏览器里验证**的：
+   * 它们分别依赖渲染顺序、玩家真实走到某格、逐帧位移与计时循环，
+   * 纯单元测试只能覆盖到生成算法那一半。
+   */
+  debugChallenge(): {
+    viewRadius: number | null;
+    visibleCells: number;
+    mazeCells: number;
+    fakeExitCells: { x: number; y: number }[];
+    fakeExitsFound: number;
+    guards: number;
+    guardCells: { x: number; y: number }[];
+    timeLeft: number | null;
+    phase: string;
+    caughtFlash: number;
+  } {
+    const g = this.game;
+    const guardPos = g?.guardPositions() ?? [];
+
+    let visible = 0;
+    let cells = 0;
+    if (g) {
+      for (let y = 0; y < g.maze.rows; y++) {
+        for (let x = 0; x < g.maze.cols; x++) {
+          if (!inMaze(g.maze, x, y)) continue;
+          cells++;
+          if (g.isVisibleCell(x, y)) visible++;
+        }
+      }
+    }
+
+    return {
+      viewRadius: g?.viewRadius ?? null,
+      visibleCells: visible,
+      mazeCells: cells,
+      fakeExitCells: (g?.fakeExitCells ?? []).map((c) => ({ x: c.x, y: c.y })),
+      fakeExitsFound: g?.foundFakeExits ?? 0,
+      guards: guardPos.length,
+      guardCells: guardPos.map((c) => ({ x: Math.round(c.x), y: Math.round(c.y) })),
+      timeLeft: g?.timeLeft ?? null,
+      phase: g?.phaseNow ?? 'none',
+      caughtFlash: g?.caughtFlashLevel ?? 0,
+    };
+  }
+
   /**
    * 当前构建的版本号（自动化验收用）。
    *
@@ -797,9 +949,7 @@ class App {
 
     g.update(dt);
 
-    if (this.difficulty.timed) {
-      must('#hud-time').textContent = formatTime(g.seconds);
-    }
+    this.syncHudTime();
     if (g.totalStars > 0) {
       must('#hud-stars').textContent = this.starsLabel();
     }
@@ -828,11 +978,15 @@ try {
     mazeInfo: () => app.debugMazeInfo(),
     lastPointerTypes: () => app.debugPointerTypes(),
     solution: () => app.debugSolution(),
+    routeTo: (x: number, y: number) => app.debugRouteTo(x, y),
     cellToScreen: (x: number, y: number) => app.debugCellToScreen(x, y),
     solutionProgress: () => app.debugSolutionProgress(),
     wallSignature: () => app.debugWallSignature(),
     hintVisible: () => app.debugHintVisible(),
     hintNext: () => app.debugHintNext(),
+    challenge: () => app.debugChallenge(),
+    isVisible: (x: number, y: number) => app.debugIsVisible(x, y),
+    isVisited: (x: number, y: number) => app.debugIsVisited(x, y),
     version: () => app.debugVersion(),
   };
 } catch (error) {

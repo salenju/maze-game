@@ -6,6 +6,9 @@ dist-ssr/
 # 验收截图（可重新生成，不必入库）
 artifacts/
 
+# AI 协作的本地记忆（属于本机工作区状态，不是项目产物）
+.workbuddy/
+
 # 日志与本地环境
 *.log
 npm-debug.log*

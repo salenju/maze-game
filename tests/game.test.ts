@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { Game } from '../src/game/game';
+import { Game, type LoseResult } from '../src/game/game';
 import {
   canMove,
+  cellIndex,
   hasWall,
   inMaze,
   junctionCount,
   openings,
+  solve,
   type Dir,
   DX,
   DY,
@@ -31,6 +33,13 @@ const diff: Difficulty = {
   timed: true,
   stars: 3,
   hintDelayMs: 15_000,
+  // 夹具默认不带「新机制」：全图可见、没有假门与怪、不限时。
+  // 这些能力各有专门的测试单独覆盖，混进这个夹具会让下面几十条
+  // 关于移动/防作弊/提示的断言全部受影响。
+  viewRadius: null,
+  fakeExits: 0,
+  guards: 0,
+  timeLimitSec: null,
 };
 
 /** 推进游戏若干秒，用固定步长模拟帧循环。 */
@@ -672,5 +681,349 @@ describe('游戏：岔路更多（难度提升的回归保护）', () => {
       many += junctionCount(new Game(mk(0.85), s * 31 + 5).maze);
     }
     expect(many).toBeGreaterThan(few * 1.8);
+  });
+});
+
+/** 从某格出发的 BFS 距离表（-1 = 不可达），用来独立复核可见集。 */
+function localDistances(maze: Maze, fromX: number, fromY: number): Int32Array {
+  const out = new Int32Array(maze.cols * maze.rows).fill(-1);
+  const start = cellIndex(maze, fromX, fromY);
+  out[start] = 0;
+  const queue = [start];
+  for (let head = 0; head < queue.length; head++) {
+    const cur = queue[head] as number;
+    const cx = cur % maze.cols;
+    const cy = (cur - cx) / maze.cols;
+    for (const dir of [0, 1, 2, 3] as Dir[]) {
+      if (!canMove(maze, cx, cy, dir)) continue;
+      const nx = cx + (DX[dir] ?? 0);
+      const ny = cy + (DY[dir] ?? 0);
+      const ni = cellIndex(maze, nx, ny);
+      if (out[ni] !== -1) continue;
+      out[ni] = (out[cur] as number) + 1;
+      queue.push(ni);
+    }
+  }
+  return out;
+}
+
+/**
+ * 一笔一笔地把笔尖带到目标格。
+ *
+ * 每一步都「松手 → 重新按下 → 划到相邻格」，因为防作弊闸门规定
+ * 只有笔尖真的进入新格子才会补前进额度；一直按着不放是走不远的。
+ * 这正是孩子真实的划笔节奏。
+ */
+function walkToCell(game: Game, tx: number, ty: number): void {
+  for (let step = 0; step < 400; step++) {
+    const cur = game.playerCell;
+    if (cur.x === tx && cur.y === ty) return;
+    const route = solve(game.maze, cur, { x: tx, y: ty });
+    if (route.length < 2) return;
+    const next = route[1] as { x: number; y: number };
+    game.releasePointer();
+    game.beginPointer(cur.x, cur.y);
+    game.dragTo(next.x, next.y);
+    for (let f = 0; f < 24; f++) {
+      game.update(1 / 60);
+      const now = game.playerCell;
+      if (now.x === next.x && now.y === next.y) break;
+    }
+  }
+}
+
+/** 数一数当前有多少迷宫格在视野里。 */
+function visibleCount(game: Game): number {
+  let n = 0;
+  for (let y = 0; y < game.maze.rows; y++) {
+    for (let x = 0; x < game.maze.cols; x++) {
+      if (inMaze(game.maze, x, y) && game.isVisibleCell(x, y)) n++;
+    }
+  }
+  return n;
+}
+
+describe('游戏：视野迷雾', () => {
+  it('不做视野限制时整张图都可见（低龄档行为不变）', () => {
+    const game = new Game(diff, 5);
+    expect(game.viewRadius).toBeNull();
+    for (let y = 0; y < game.maze.rows; y++) {
+      for (let x = 0; x < game.maze.cols; x++) {
+        expect(game.isVisibleCell(x, y)).toBe(true);
+      }
+    }
+  });
+
+  it('开启视野后，可见集恰好等于「沿走廊 R 步以内」', () => {
+    const foggy: Difficulty = { ...diff, cols: 12, rows: 12, viewRadius: 3 };
+    const game = new Game(foggy, 2026);
+    expect(game.viewRadius).toBe(3);
+
+    const start = game.maze.start;
+    const dist = localDistances(game.maze, start.x, start.y);
+
+    let visible = 0;
+    let hidden = 0;
+    for (let y = 0; y < game.maze.rows; y++) {
+      for (let x = 0; x < game.maze.cols; x++) {
+        if (!inMaze(game.maze, x, y)) continue;
+        const d = dist[cellIndex(game.maze, x, y)] as number;
+        const expected = d !== -1 && d <= 3;
+        expect(game.isVisibleCell(x, y)).toBe(expected);
+        if (expected) visible++;
+        else hidden++;
+      }
+    }
+    // 两个方向都要非空，否则说明这个断言其实什么都没测
+    expect(visible).toBeGreaterThan(0);
+    expect(hidden).toBeGreaterThan(0);
+  });
+
+  it('「看不见」是按走廊算的，不会隔着墙看到隔壁走廊', () => {
+    // 欧氏半径的实现会隔着墙「透视」，这条专门锁住不能用欧氏距离。
+    const foggy: Difficulty = { ...diff, cols: 12, rows: 12, viewRadius: 2 };
+    const game = new Game(foggy, 31);
+    const start = game.maze.start;
+    const dist = localDistances(game.maze, start.x, start.y);
+    for (let y = 0; y < game.maze.rows; y++) {
+      for (let x = 0; x < game.maze.cols; x++) {
+        if (!inMaze(game.maze, x, y)) continue;
+        const manhattan = Math.abs(x - start.x) + Math.abs(y - start.y);
+        const graph = dist[cellIndex(game.maze, x, y)] as number;
+        if (manhattan <= 2 && graph > 2) {
+          // 几何上很近、图上却要走更远：必须落在视野之外
+          expect(game.isVisibleCell(x, y)).toBe(false);
+        }
+      }
+    }
+  });
+
+  it('小球移动后视野跟着移动，走过的地方变成「记忆」', () => {
+    const foggy: Difficulty = { ...diff, cols: 14, rows: 14, viewRadius: 3 };
+    const game = new Game(foggy, 88);
+    const route = solve(game.maze);
+    const target = route[Math.min(route.length - 1, 18)] as { x: number; y: number };
+
+    expect(game.isVisibleCell(target.x, target.y)).toBe(false);
+    expect(game.hasVisitedCell(target.x, target.y)).toBe(false);
+
+    walkToCell(game, target.x, target.y);
+
+    expect(game.isVisibleCell(target.x, target.y)).toBe(true);
+    expect(game.hasVisitedCell(target.x, target.y)).toBe(true);
+    // 起点已经离开视野，但属于「走过」，因此仍在记忆里
+    expect(game.hasVisitedCell(game.maze.start.x, game.maze.start.y)).toBe(true);
+    // 视野不是「越走越大」的全局揭示：可见格数应该仍然是局部的一个小窗口
+    expect(visibleCount(game)).toBeLessThan(game.maze.cols * game.maze.rows / 2);
+  });
+});
+
+describe('游戏：假出口', () => {
+  it('走到假出口只会被识破，绝不触发通关', () => {
+    const withFakes: Difficulty = {
+      ...diff,
+      cols: 12,
+      rows: 12,
+      fakeExits: 2,
+      branchiness: 0.6,
+      braid: 0.1,
+    };
+    let faked = 0;
+    let won = 0;
+    const game = new Game(withFakes, 4242, {
+      onFakeExit: () => {
+        faked++;
+      },
+      onWin: () => {
+        won++;
+      },
+    });
+
+    expect(game.fakeExitCells.length).toBe(2);
+    expect(game.foundFakeExits).toBe(0);
+
+    const first = game.fakeExitCells[0] as { x: number; y: number };
+    walkToCell(game, first.x, first.y);
+
+    expect(faked).toBe(1);
+    expect(game.foundFakeExits).toBe(1);
+    expect(game.isFakeExitFound(0)).toBe(true);
+    expect(won).toBe(0);
+    expect(game.phaseNow).toBe('playing');
+
+    // 再走一次不会重复触发（渲染层据此把它灰化，孩子不用反复试同一个坑）
+    walkToCell(game, first.x, first.y);
+    expect(faked).toBe(1);
+  });
+
+  it('假门的位置随地图确定性生成', () => {
+    const withFakes: Difficulty = { ...diff, fakeExits: 3 };
+    const a = new Game(withFakes, 777);
+    const b = new Game(withFakes, 777);
+    expect(a.fakeExitCells).toEqual(b.fakeExitCells);
+
+    const c = new Game(withFakes, 778);
+    expect(c.fakeExitCells).not.toEqual(a.fakeExitCells);
+  });
+
+  it('假门是可以走过去的普通走廊格，不会把路堵死', () => {
+    const withFakes: Difficulty = { ...diff, cols: 12, rows: 12, fakeExits: 2 };
+    const game = new Game(withFakes, 909);
+    for (const f of game.fakeExitCells) {
+      expect(inMaze(game.maze, f.x, f.y)).toBe(true);
+      expect(openings(game.maze, f.x, f.y).length).toBeGreaterThanOrEqual(1);
+    }
+  });
+});
+
+describe('游戏：限时通关', () => {
+  it('限时耗尽会进入失败状态并回调 onLose，之后不再接受拖动', () => {
+    // 用数组收集而不是 `let x: T | null = null`：后者会让 TS 把闭包里的赋值
+    // 当成不存在，收窄到 never，构建时的 tsc 会直接报错。
+    const results: LoseResult[] = [];
+    const timed: Difficulty = { ...diff, timeLimitSec: 3 };
+    const game = new Game(timed, 12, {
+      onLose: (r) => {
+        results.push(r);
+      },
+    });
+
+    expect(game.timeLeft).toBe(3);
+    run(game, 2);
+    expect(game.phaseNow).toBe('playing');
+    expect(game.timeLeft as number).toBeGreaterThan(0);
+
+    run(game, 1.5);
+    expect(game.phaseNow).toBe('lost');
+    const lose = results[0];
+    if (!lose) throw new Error('限时耗尽没有触发 onLose');
+    expect(lose.timeLimit).toBe(3);
+    expect(game.timeLeft).toBe(0);
+
+    // 失败之后笔怎么划都不动
+    const frozen = { ...game.playerPos };
+    const route = solve(game.maze);
+    const next = route[1] as { x: number; y: number };
+    game.beginPointer(game.playerCell.x, game.playerCell.y);
+    game.dragTo(next.x, next.y);
+    run(game, 1);
+    expect(game.playerPos).toEqual(frozen);
+  });
+
+  it('不限时（timeLimitSec 为 null）时永远不会失败', () => {
+    const game = new Game({ ...diff, timeLimitSec: null }, 3);
+    expect(game.timeLeft).toBeNull();
+    run(game, 90);
+    expect(game.phaseNow).toBe('playing');
+  });
+
+  it('大师档的限时足够宽松，走完正路用不掉一半时间', () => {
+    // 限时是「压力」不是「不可能」：先量出这一档解路径的真实长度，
+    // 再按 6.5 格/秒的理想速度估算纯赶路耗时，必须远小于限时。
+    const master = presetById('master');
+    const limit = master.timeLimitSec;
+    if (limit === null) throw new Error('大师档应当限时');
+    let worstRatio = 0;
+    for (let s = 0; s < 8; s++) {
+      const game = new Game(master, s * 991 + 7);
+      const idealSeconds = (game.solution.length - 1) / 6.5;
+      worstRatio = Math.max(worstRatio, idealSeconds / limit);
+    }
+    // 纯赶路（不含走错与折返）应当只占限时的一小半
+    expect(worstRatio).toBeLessThan(0.5);
+  });
+});
+
+describe('游戏：巡逻怪', () => {
+  it('怪会沿路线移动，不是站着不动的装饰', () => {
+    const guarded: Difficulty = {
+      ...diff,
+      cols: 16,
+      rows: 16,
+      guards: 2,
+      branchiness: 1,
+      braid: 0,
+    };
+    const game = new Game(guarded, 31);
+    expect(game.guardPositions().length).toBe(2);
+
+    // 采样整段时间而不是只看两秒后的位移：怪的路线可能很短，
+    // 「两秒后恰好回到出发点附近」是正常现象，不能因此判它没动。
+    const origin = game.guardPositions().map((p) => ({ x: p.x, y: p.y }));
+    const moved = origin.map(() => false);
+    for (let t = 0; t < 240; t++) {
+      game.update(1 / 60);
+      game.guardPositions().forEach((p, i) => {
+        const a = origin[i] as { x: number; y: number };
+        if (Math.abs(p.x - a.x) + Math.abs(p.y - a.y) > 0.5) moved[i] = true;
+      });
+    }
+    expect(moved).toEqual([true, true]);
+  });
+
+  it('撞上怪会被送回起点、进入短暂无敌，且已吃到的星星不会丢', () => {
+    const guarded: Difficulty = {
+      ...diff,
+      cols: 24,
+      rows: 24,
+      shape: 'star',
+      branchiness: 1,
+      braid: 0,
+      guards: 1,
+    };
+
+    let caught = 0;
+    let collectedAtCatch = -1;
+    let ref: Game | null = null;
+    const game = new Game(guarded, 20261015, {
+      onCaught: () => {
+        caught++;
+        collectedAtCatch = ref ? ref.collected : -1;
+      },
+    });
+    ref = game;
+
+    // 笔尖追着怪的当前位置，逐帧推进；怪慢、小球快，必然追上
+    for (let i = 0; i < 3000 && caught === 0 && game.phaseNow === 'playing'; i++) {
+      const g = game.guardPositions()[0];
+      if (g) game.dragTo(g.x, g.y);
+      game.update(1 / 60);
+    }
+
+    expect(game.phaseNow).toBe('playing');
+    expect(caught).toBe(1);
+    expect(game.playerCell).toEqual(game.maze.start);
+    expect(game.isGracePeriod).toBe(true);
+    // 回起点只是位置重置，收集进度必须原样保留
+    expect(game.collected).toBe(collectedAtCatch);
+
+    // 无敌时间内原地不动也不会被再抓一次
+    const stillCaught = caught;
+    run(game, 1);
+    expect(caught).toBe(stillCaught);
+  });
+
+  it('怪的路线始终避开起点格（否则会陷入「刚复活又被抓」的死循环）', () => {
+    for (let s = 0; s < 6; s++) {
+      const guarded: Difficulty = {
+        ...diff,
+        cols: 18,
+        rows: 18,
+        shape: 'star',
+        guards: 3,
+        branchiness: 1,
+        braid: 0,
+      };
+      const game = new Game(guarded, s * 137 + 11);
+      // 让怪走很久，确认它们的活动范围内不包含起点正中心
+      for (let i = 0; i < 600; i++) {
+        game.update(1 / 60);
+        for (const p of game.guardPositions()) {
+          const d = Math.abs(p.x - game.maze.start.x) + Math.abs(p.y - game.maze.start.y);
+          // 允许从旁边经过（距离 1），但绝不能压在起点上
+          expect(d).toBeGreaterThan(0.5);
+        }
+      }
+    }
   });
 });

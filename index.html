@@ -114,6 +114,21 @@
         </div>
       </section>
 
+      <!-- 失败（限时耗尽）。和结算页刻意分开：
+           限时是唯一会「输」的机制，需要一个说得清原因的页面，
+           而不是复用结算页让文案自相矛盾。 -->
+      <section class="screen overlay" id="screen-lose" data-screen="lose">
+        <div class="card">
+          <h2 id="lose-title">时间到啦</h2>
+          <p class="muted" id="lose-lead"></p>
+          <dl class="win-stats" id="lose-stats"></dl>
+          <div class="card-actions">
+            <button class="btn btn-primary" id="btn-lose-retry">再试一次</button>
+            <button class="btn btn-ghost" id="btn-lose-home">回首页</button>
+          </div>
+        </div>
+      </section>
+
       <!-- 暂停 -->
       <section class="screen overlay" id="screen-pause" data-screen="pause">
         <div class="card">

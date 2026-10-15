@@ -10,7 +10,7 @@
  * 因此由第一次 pointerdown 触发 unlock()。
  */
 
-export type SoundName = 'step' | 'star' | 'bump' | 'win' | 'click';
+export type SoundName = 'step' | 'star' | 'bump' | 'win' | 'click' | 'wrong' | 'caught';
 
 export class Audio {
   private ctx: AudioContext | null = null;
@@ -81,6 +81,16 @@ export class Audio {
         break;
       case 'step':
         this.blip(420, 0.035, 'sine', 0.08);
+        break;
+      case 'wrong':
+        // 下行两音 =「这条路不对」。与得分的上行音正好相反，孩子不用教就分得清
+        this.blip(392, 0.12, 'triangle', 0.32);
+        this.blip(262, 0.18, 'triangle', 0.3, 0.1);
+        break;
+      case 'caught':
+        // 低沉的「被抓」音：比撞墙更重，但仍不刺耳
+        this.blip(180, 0.14, 'sawtooth', 0.2);
+        this.blip(120, 0.26, 'sawtooth', 0.2, 0.12);
         break;
       case 'click':
         this.blip(660, 0.06, 'sine', 0.3);

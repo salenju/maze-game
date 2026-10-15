@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   canMove,
+  cellIndex,
   deadEndCount,
   generateMaze,
   hasWall,
@@ -8,12 +9,16 @@ import {
   junctionCount,
   mazeCellCount,
   openings,
+  pingPongIndex,
   placeCollectibles,
+  placeFakeExits,
+  placeGuards,
   solve,
   MIN_SOLUTION_CELLS,
   type Dir,
   DX,
   DY,
+  type Maze,
 } from '../src/core/maze';
 import { mulberry32 } from '../src/core/rng';
 import {
@@ -798,5 +803,258 @@ describe('防作弊：形状迷宫下的解路径下界', () => {
     expect(MIN_SOLUTION_CELLS).toBeGreaterThanOrEqual(0);
     const maze = generateMaze({ cols: 6, rows: 6, braid: 0.5, shape: 'star', branchiness: 0.5 }, mulberry32(0));
     expect(solve(maze).length).toBeGreaterThan(0);
+  });
+});
+
+/** 从某格做的 BFS 距离表（-1 = 不可达），测试里用来独立复核可见集/距离约束。 */
+function localDistances(maze: Maze, fromX: number, fromY: number): Int32Array {
+  const dist = new Int32Array(maze.cols * maze.rows).fill(-1);
+  const start = cellIndex(maze, fromX, fromY);
+  dist[start] = 0;
+  const queue = [start];
+  for (let head = 0; head < queue.length; head++) {
+    const cur = queue[head] as number;
+    const cx = cur % maze.cols;
+    const cy = (cur - cx) / maze.cols;
+    for (const dir of [0, 1, 2, 3] as Dir[]) {
+      if (!canMove(maze, cx, cy, dir)) continue;
+      const nx = cx + (DX[dir] ?? 0);
+      const ny = cy + (DY[dir] ?? 0);
+      const ni = cellIndex(maze, nx, ny);
+      if (dist[ni] !== -1) continue;
+      dist[ni] = (dist[cur] as number) + 1;
+      queue.push(ni);
+    }
+  }
+  return dist;
+}
+
+describe('假出口', () => {
+  const build = (cols: number, rows: number, seed: number, shape: ShapeId = 'square'): Maze =>
+    generateMaze({ cols, rows, braid: 0.1, shape, branchiness: 0.8 }, mulberry32(seed));
+
+  it('数量为 0 时一个都不放，且不消耗随机数（既有档位的地图不能因此改变）', () => {
+    const withZero = generateMaze(
+      { cols: 12, rows: 12, braid: 0.2, shape: 'square', branchiness: 0.6 },
+      mulberry32(31),
+    );
+    const alsoZero = generateMaze(
+      { cols: 12, rows: 12, braid: 0.2, shape: 'square', branchiness: 0.6 },
+      mulberry32(31),
+    );
+    expect(placeFakeExits(withZero, 0)).toEqual([]);
+    // 不放假门的两张同名迷宫必须逐字节一致
+    expect(Array.from(withZero.walls)).toEqual(Array.from(alsoZero.walls));
+  });
+
+  it('放出来的假门都在迷宫内，且不与起点/出口/彼此重合', () => {
+    for (const [c, r] of [
+      [12, 12],
+      [18, 18],
+      [24, 24],
+    ] as const) {
+      for (const shape of SHAPE_IDS) {
+        const maze = build(c, r, c * 13 + r, shape);
+        const fakes = placeFakeExits(maze, 3);
+        expect(fakes.length).toBe(3);
+        const keys = new Set(fakes.map((f) => cellIndex(maze, f.x, f.y)));
+        expect(keys.size).toBe(fakes.length);
+        for (const f of fakes) {
+          expect(inMaze(maze, f.x, f.y)).toBe(true);
+          expect(f.x === maze.start.x && f.y === maze.start.y).toBe(false);
+          expect(f.x === maze.exit.x && f.y === maze.exit.y).toBe(false);
+        }
+      }
+    }
+  });
+
+  it('假门绝不落在解路径上（正路上放一个假门等于「游戏坏了」）', () => {
+    for (let seed = 0; seed < 12; seed++) {
+      const maze = build(18, 18, seed * 77);
+      const onRoute = new Set(solve(maze).map((c) => cellIndex(maze, c.x, c.y)));
+      for (const f of placeFakeExits(maze, 4)) {
+        expect(onRoute.has(cellIndex(maze, f.x, f.y))).toBe(false);
+      }
+    }
+  });
+
+  it('假门离真出口足够远（紧挨着真门的假门没有任何迷惑价值）', () => {
+    for (let seed = 0; seed < 12; seed++) {
+      const maze = build(20, 20, seed * 131 + 5);
+      const dist = localDistances(maze, maze.exit.x, maze.exit.y);
+      for (const f of placeFakeExits(maze, 4)) {
+        // 至少 4 步，且不小于「图上直径的三分之一」
+        expect(dist[cellIndex(maze, f.x, f.y)] as number).toBeGreaterThanOrEqual(4);
+      }
+    }
+  });
+
+  it('同一种子得到的假门完全一致（可复现）', () => {
+    const a = placeFakeExits(build(20, 20, 909), 3);
+    const b = placeFakeExits(build(20, 20, 909), 3);
+    expect(a).toEqual(b);
+  });
+
+  it('请求数量超过可放位置时不会重复给出同一格', () => {
+    const maze = build(8, 8, 3);
+    const fakes = placeFakeExits(maze, LIMITS.maxFakeExits);
+    const keys = new Set(fakes.map((f) => cellIndex(maze, f.x, f.y)));
+    expect(keys.size).toBe(fakes.length);
+  });
+});
+
+describe('巡逻怪', () => {
+  const build = (cols: number, rows: number, seed: number, shape: ShapeId = 'square'): Maze =>
+    generateMaze({ cols, rows, braid: 0, shape, branchiness: 1 }, mulberry32(seed));
+
+  it('数量为 0 时返回空数组', () => {
+    expect(placeGuards(build(12, 12, 8), 0, mulberry32(1))).toEqual([]);
+  });
+
+  it('每条路线的每一格都在迷宫内、彼此相邻、且不经过起点与出口', () => {
+    for (const shape of SHAPE_IDS) {
+      const maze = build(18, 18, 2024, shape);
+      const paths = placeGuards(maze, 3, mulberry32(17));
+      expect(paths.length).toBe(3);
+      for (const path of paths) {
+        expect(path.length).toBeGreaterThanOrEqual(2);
+        for (let i = 0; i < path.length; i++) {
+          const c = path[i] as { x: number; y: number };
+          expect(inMaze(maze, c.x, c.y)).toBe(true);
+          expect(c.x === maze.start.x && c.y === maze.start.y).toBe(false);
+          expect(c.x === maze.exit.x && c.y === maze.exit.y).toBe(false);
+          if (i === 0) continue;
+          const prev = path[i - 1] as { x: number; y: number };
+          expect(Math.abs(c.x - prev.x) + Math.abs(c.y - prev.y)).toBe(1);
+        }
+      }
+    }
+  });
+
+  it('路线不会立刻原路折返（否则怪只会在两点之间抽搐）', () => {
+    const maze = build(24, 24, 4242, 'star');
+    for (const path of placeGuards(maze, 4, mulberry32(6))) {
+      for (let i = 2; i < path.length; i++) {
+        const a = path[i - 2] as { x: number; y: number };
+        const b = path[i] as { x: number; y: number };
+        expect(a.x === b.x && a.y === b.y).toBe(false);
+      }
+    }
+  });
+
+  it('起点落在解路径上（怪必须挡在孩子一定要经过的地方）', () => {
+    // 用户能感受到「有怪在巡逻」的前提是它会出现在必经之路上，
+    // 从角落里出发的怪看着热闹却挡不住任何事。
+    const maze = build(20, 20, 555, 'star');
+    const route = solve(maze);
+    const near = new Set<number>();
+    for (const c of route) {
+      for (let dy = -2; dy <= 2; dy++) {
+        for (let dx = -2; dx <= 2; dx++) {
+          if (inMaze(maze, c.x + dx, c.y + dy)) near.add(cellIndex(maze, c.x + dx, c.y + dy));
+        }
+      }
+    }
+    for (const path of placeGuards(maze, 2, mulberry32(11))) {
+      const head = path[0] as { x: number; y: number };
+      expect(near.has(cellIndex(maze, head.x, head.y))).toBe(true);
+    }
+  });
+
+  it('同一种子得到的路线完全一致', () => {
+    const maze = build(20, 20, 31);
+    expect(placeGuards(maze, 2, mulberry32(9))).toEqual(placeGuards(maze, 2, mulberry32(9)));
+  });
+
+  it('pingPongIndex 在两端之间折返且不越界', () => {
+    const L = 6;
+    const seen: number[] = [];
+    for (let u = 0; u < 22; u += 0.5) seen.push(pingPongIndex(u, L));
+    for (const k of seen) {
+      expect(k).toBeGreaterThanOrEqual(0);
+      expect(k).toBeLessThanOrEqual(L - 1);
+    }
+    expect(pingPongIndex(0, L)).toBe(0);
+    expect(pingPongIndex(L - 1, L)).toBe(L - 1);
+    // 走到头之后折返，而不是绕回起点
+    expect(pingPongIndex(L, L)).toBe(L - 2);
+    // 只有一格时恒为 0，且不会因 period=0 产生 NaN
+    expect(pingPongIndex(3, 1)).toBe(0);
+  });
+});
+
+describe('大师档与新增机制的难度配置', () => {
+  it('大师档四项机制全开，且参数仍然顶格', () => {
+    const master = presetById('master');
+    expect(master.cols).toBe(LIMITS.maxCols);
+    expect(master.rows).toBe(LIMITS.maxRows);
+    expect(master.branchiness).toBe(1);
+    expect(master.braid).toBe(0);
+    expect(master.viewRadius).not.toBeNull();
+    expect(master.fakeExits).toBeGreaterThan(0);
+    expect(master.guards).toBeGreaterThan(0);
+    expect(master.timeLimitSec).not.toBeNull();
+    expect(master.footprint).toBe('none');
+    expect(master.hintDelayMs).toBeNull();
+  });
+
+  it('挑战档改为限时（用户要求把「记录用时」升级成「时间压力」）', () => {
+    const hard = presetById('hard');
+    expect(hard.timed).toBe(true);
+    expect(hard.timeLimitSec).not.toBeNull();
+    // 但挑战档不加别的机制：迷雾/假门/怪只属于大师档
+    expect(hard.viewRadius).toBeNull();
+    expect(hard.fakeExits).toBe(0);
+    expect(hard.guards).toBe(0);
+  });
+
+  it('低龄三档完全不带新机制（改动对 6-9 岁零影响）', () => {
+    for (const id of ['starter', 'easy', 'medium']) {
+      const d = presetById(id);
+      expect(d.viewRadius).toBeNull();
+      expect(d.fakeExits).toBe(0);
+      expect(d.guards).toBe(0);
+      expect(d.timeLimitSec).toBeNull();
+    }
+  });
+
+  it('自定义档的视野与限时严格区分「没设置」与「明确关闭」', () => {
+    // 缺字段 → 沿用默认档位（medium：全图可见、不限时）
+    expect(clampCustom({}).viewRadius).toBeNull();
+    expect(clampCustom({}).timeLimitSec).toBeNull();
+    // 显式 null → 关闭
+    expect(clampCustom({ viewRadius: null }).viewRadius).toBeNull();
+    expect(clampCustom({ timeLimitSec: null }).timeLimitSec).toBeNull();
+    // 给了数字 → 夹到范围内
+    expect(clampCustom({ viewRadius: 99 }).viewRadius).toBe(LIMITS.maxViewRadius);
+    expect(clampCustom({ viewRadius: 1 }).viewRadius).toBe(LIMITS.minViewRadius);
+    expect(clampCustom({ timeLimitSec: 5 }).timeLimitSec).toBe(LIMITS.minTimeLimitSec);
+    expect(clampCustom({ timeLimitSec: 99_999 }).timeLimitSec).toBe(LIMITS.maxTimeLimitSec);
+  });
+
+  it('自定义档的假门与怪数量被夹到 0..上限', () => {
+    expect(clampCustom({ fakeExits: 99 }).fakeExits).toBe(LIMITS.maxFakeExits);
+    expect(clampCustom({ fakeExits: -4 }).fakeExits).toBe(0);
+    expect(clampCustom({ guards: 99 }).guards).toBe(LIMITS.maxGuards);
+    expect(clampCustom({ guards: -1 }).guards).toBe(0);
+    expect(clampCustom({}).fakeExits).toBe(0);
+    expect(clampCustom({}).guards).toBe(0);
+  });
+
+  it('describeDifficulty 会把新机制写成家长看得懂的标签', () => {
+    const tags = describeDifficulty(presetById('master'));
+    expect(tags.some((t) => t.includes('只看清'))).toBe(true);
+    expect(tags.some((t) => t.includes('假出口'))).toBe(true);
+    expect(tags.some((t) => t.includes('巡逻怪'))).toBe(true);
+    expect(tags.some((t) => t.includes('限时'))).toBe(true);
+
+    // 低龄档不该出现任何新机制标签
+    const easy = describeDifficulty(presetById('starter'));
+    expect(easy.some((t) => t.includes('假出口') || t.includes('巡逻怪'))).toBe(false);
+  });
+
+  it('预设数量与顺序：大师档排在挑战档之后', () => {
+    const ids = PRESETS.map((p) => p.id);
+    expect(ids.indexOf('master')).toBe(ids.indexOf('hard') + 1);
   });
 });

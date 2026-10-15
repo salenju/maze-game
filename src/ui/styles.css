@@ -459,6 +459,29 @@ body {
   color: var(--fg);
 }
 
+/* 限时剩下不到 30 秒：只靠数字变化孩子注意不到，必须变色 + 呼吸。
+   用动画而不是闪烁，避免在平板上造成视觉疲劳。 */
+.hud-time[data-low='true'] {
+  color: #ff6b6b;
+  animation: hud-low-pulse 1s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hud-time[data-low='true'] {
+    animation: none;
+  }
+}
+
+@keyframes hud-low-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
 .hud-stars {
   display: flex;
   align-items: center;

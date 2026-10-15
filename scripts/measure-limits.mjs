@@ -45,7 +45,7 @@ async function startCustom(page, { cols, rows, stars, braid }) {
   await page.goto(BASE, { waitUntil: 'networkidle' });
   await page.click('#btn-difficulty');
   await page.waitForTimeout(400);
-  await page.locator('.diff-item').nth(4).click(); // 自定义
+  await page.locator('[data-diff-id="custom"]').click();
   await page.waitForTimeout(250);
 
   // 按 data-field 定位而不是按位置：新增滑块不会让脚本改错控件
